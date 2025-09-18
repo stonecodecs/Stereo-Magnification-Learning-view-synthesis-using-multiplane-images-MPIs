@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from argparse import ArgumentParser
 from tqdm import tqdm
+import wandb
 
 from dataset import RealEstateDataset
 from networks import StereoMagnificationModel, VGGPerceptualLoss
@@ -19,6 +20,7 @@ checkpoint = None
 print_freq = 20
 data_dir = "/workspace/re10kvol/re10k"
 save_dir = 'checkpoints'
+seed = 7
 
 parser = ArgumentParser(description="Train for MPIs")
 
@@ -31,7 +33,9 @@ parser.add_argument('--end_epoch', default=end_epoch, type=int, help="Training e
 parser.add_argument('--lr', default=lr, type=float, help="Start learning rate")
 parser.add_argument('--batch_size', default=batch_size, type=int, help="Mini batch size")
 parser.add_argument('--print_freq', default=print_freq, type=int, help="Training loss print frequency")
-parser.add_argument('--seed', default=7, type=int, help="Training seed")
+parser.add_argument('--seed', default=seed, type=int, help="Training seed")
+parser.add_argument('--wandb', action='store_true', help="Enable Weights & Biases logging")
+parser.add_argument('--log_img_every', default=1000, type=int, help="Log images every N training iterations")
 
 
 def train_net(args):
@@ -57,6 +61,13 @@ def train_net(args):
     # Move to GPU, if available
     model = model.to(device)
 
+    # wandb watch model
+    if args.wandb:
+        try:
+            wandb.watch(model, log='all', log_freq=max(10, args.print_freq))
+        except Exception:
+            pass
+
     # Custom dataloaders
     train_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size)
     train_loader = torch.utils.data.DataLoader(
@@ -73,14 +84,23 @@ def train_net(args):
                           model=model,
                           optimizer=optimizer,
                           epoch=epoch,
-                          logger=logger)
+                          logger=logger,
+                          log_img_every=args.log_img_every,
+                          use_wandb=args.wandb)
         writer.add_scalar('Train_Loss', train_loss, epoch)
+        if args.wandb:
+            wandb.log({'train/loss_epoch': train_loss, 'epoch': epoch})
         # One epoch's validation
         valid_loss = valid(valid_loader=valid_loader,
                           model=model,
-                          logger=logger)
+                          logger=logger,
+                          epoch=epoch,
+                          log_img_every=args.log_img_every,
+                          use_wandb=args.wandb)
 
         writer.add_scalar('Valid_Loss', valid_loss, epoch)
+        if args.wandb:
+            wandb.log({'valid/loss_epoch': valid_loss, 'epoch': epoch})
 
         # Check if there was an improvement
         is_best = valid_loss < best_loss
@@ -94,13 +114,13 @@ def train_net(args):
         save_checkpoint(epoch, epochs_since_improvement, model.state_dict(), optimizer, best_loss, is_best, args.save_dir, args.num_planes)
 
 
-def train(train_loader, model, optimizer, epoch, logger):
+def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_wandb=False):
     model.train()  # train mode (dropout and batchnorm is used)
 
     print("Training")
     losses = AverageMeter()
     criterion = VGGPerceptualLoss().to(device)
-    for i, (img, dep) in enumerate(tqdm(train_loader), desc="Training MPI"):
+    for i, (img, dep) in enumerate(tqdm(train_loader, desc="Training MPI")):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device, non_blocking=True)
         for k, v in dep.items():
@@ -114,6 +134,10 @@ def train(train_loader, model, optimizer, epoch, logger):
         loss = criterion(out, dep)
         losses.update(loss.item())
 
+        # wandb: per-iter loss
+        if use_wandb:
+            wandb.log({'train/loss': loss.item(), 'epoch': epoch, 'iter': i})
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -123,16 +147,37 @@ def train(train_loader, model, optimizer, epoch, logger):
             status = 'Epoch: [{0}][step: {1}]\t' \
                     'Loss {loss.val:.4f} (avg: {loss.avg:.4f})\t'.format(epoch, i, loss=losses)
             logger.info(status)
+
+        # Periodic image logging (first item in batch)
+        if use_wandb and (i % log_img_every == 0):
+            try:
+                with torch.no_grad():
+                    rgba_layers = mpi_from_net_output(out, dep)
+                    rel_pose = torch.matmul(dep['tgt_img_cfw'], dep['ref_img_wfc'])
+                    pred_image = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics'])
+                    # take first sample and convert to uint8 HWC
+                    pred_vis = (((pred_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    tgt_vis = (((dep['tgt_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    wandb.log({
+                        'train/pred_image': wandb.Image(pred_vis),
+                        'train/target_image': wandb.Image(tgt_vis),
+                        'train/ref_image': wandb.Image(ref_vis),
+                        'epoch': epoch,
+                        'iter': i
+                    })
+            except Exception:
+                pass
     return losses.avg
 
 
-def valid(valid_loader, model, logger):
+def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=False):
     model.eval()
 
     losses = AverageMeter()
     l2_loss = nn.MSELoss().to(device)
 
-    for img, dep in tqdm(valid_loader):
+    for i, (img, dep) in enumerate(tqdm(valid_loader)):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device, non_blocking=True)
         for k, v in dep.items():
@@ -149,6 +194,22 @@ def valid(valid_loader, model, logger):
         # Calculate loss
         loss = l2_loss(output_image, target)
         losses.update(loss.item())
+
+        # Periodic image logging
+        if use_wandb and (i % log_img_every == 0):
+            try:
+                pred_vis = (((output_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                tgt_vis = (((target[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                wandb.log({
+                    'valid/pred_image': wandb.Image(pred_vis),
+                    'valid/target_image': wandb.Image(tgt_vis),
+                    'valid/ref_image': wandb.Image(ref_vis),
+                    'epoch': epoch,
+                    'valid/iter': i
+                })
+            except Exception:
+                pass
 
     # Print status
     status = 'Validation: Loss {loss.avg:.4f}\n'.format(loss=losses)
@@ -176,4 +237,19 @@ def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
     args = parser.parse_args()
+    # wandb config
+    if args.wandb:
+        project_name = "mpi-re10k"
+        config = {
+            "learning_rate": args.lr,
+            "batch_size": args.batch_size,
+            "end_epoch": args.end_epoch,
+            "img_size": args.img_size,
+            "num_planes": args.num_planes,
+            "log_img_every": args.log_img_every,
+        }
+        try:
+            wandb.init(project=project_name, config=config)
+        except Exception:
+            pass
     train_net(args)
