@@ -11,13 +11,13 @@ from dataset import RealEstateDataset
 from networks import StereoMagnificationModel, VGGPerceptualLoss
 from utils import *
 
-img_size = (640, 360)  # W,H
+img_size = (360, 640)  # W,H
 num_planes = 32
 lr = 2e-4
 batch_size = 1
 end_epoch = 20
 checkpoint = None
-print_freq = 20
+print_freq = 100
 data_dir = "/workspace/re10kvol/re10k"
 save_dir = 'checkpoints'
 seed = 7
@@ -61,13 +61,6 @@ def train_net(args):
     # Move to GPU, if available
     model = model.to(device)
 
-    # wandb watch model
-    if args.wandb:
-        try:
-            wandb.watch(model, log='all', log_freq=max(10, args.print_freq))
-        except Exception:
-            pass
-
     # Custom dataloaders
     train_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size)
     train_loader = torch.utils.data.DataLoader(
@@ -75,7 +68,7 @@ def train_net(args):
 
     valid_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size, is_valid=True)
     valid_loader = torch.utils.data.DataLoader(
-        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8)
+        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     logger = get_logger()
 

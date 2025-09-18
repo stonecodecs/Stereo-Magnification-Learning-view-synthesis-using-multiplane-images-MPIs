@@ -149,10 +149,10 @@ class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True, img_size=224):
         super(VGGPerceptualLoss, self).__init__()
         blocks = []
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[:4].eval())
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[4:9].eval())
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[9:16].eval())
-        blocks.append(torchvision.models.vgg16(pretrained=True).features[16:23].eval())
+        blocks.append(torchvision.models.vgg19(pretrained=True).features[:4].eval())
+        blocks.append(torchvision.models.vgg19(pretrained=True).features[4:9].eval())
+        blocks.append(torchvision.models.vgg19(pretrained=True).features[9:16].eval())
+        blocks.append(torchvision.models.vgg19(pretrained=True).features[16:23].eval())
         for bl in blocks:
             for p in bl.parameters():
                 p.requires_grad = False
@@ -175,9 +175,14 @@ class VGGPerceptualLoss(torch.nn.Module):
 
         input = input.permute(0, 3, 1, 2)
         target = target.permute(0, 3, 1, 2)
+
+        # [-1,1] to [0,1] to make consistent with imagenet mean/std
+        input01 = (input+1.0) / 2.0
+        target01 = (target+1.0) / 2.0
         
-        input = (input-self.mean_const) / self.std_const
-        target = (target-self.mean_const) / self.std_const
+        input = (input01-self.mean_const) / self.std_const
+        target = (target01-self.mean_const) / self.std_const
+
         if self.resize:
             input = self.transform(input, mode='bilinear', size=(self.img_size, self.img_size), align_corners=False)
             target = self.transform(target, mode='bilinear', size=(self.img_size, self.img_size), align_corners=False)
