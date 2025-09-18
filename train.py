@@ -26,7 +26,7 @@ parser = ArgumentParser(description="Train for MPIs")
 
 parser.add_argument('--save_dir', default=save_dir, type=str, help="Directory of save checkpoint")
 parser.add_argument('--data_dir', default=data_dir, type=str, help="Directory of real-estate data")
-parser.add_argument('--checkpoint', default=checkpoint, type=str, help="Directory of load checkpoint")
+parser.add_argument('--checkpoint', default=checkpoint, type=str, help="Directory of load checkpoint to resume training.")
 parser.add_argument('--img_size', default=img_size, type=int, help="training data image resolution")
 parser.add_argument('--num_planes', default=num_planes, type=int, help="MPIs depths")
 parser.add_argument('--end_epoch', default=end_epoch, type=int, help="Training epoch size")
@@ -36,6 +36,7 @@ parser.add_argument('--print_freq', default=print_freq, type=int, help="Training
 parser.add_argument('--seed', default=seed, type=int, help="Training seed")
 parser.add_argument('--wandb', action='store_true', help="Enable Weights & Biases logging")
 parser.add_argument('--log_img_every', default=1000, type=int, help="Log images every N training iterations")
+parser.add_argument('--save_every_n_iterations', default=None, type=int, help="Saves a checkpoint every N training iterations.")
 
 
 def train_net(args):
@@ -79,7 +80,8 @@ def train_net(args):
                           epoch=epoch,
                           logger=logger,
                           log_img_every=args.log_img_every,
-                          use_wandb=args.wandb)
+                          use_wandb=args.wandb,
+                          save_every_n_iterations=args.save_every_n_iterations)
         writer.add_scalar('Train_Loss', train_loss, epoch)
         if args.wandb:
             wandb.log({'train/loss_epoch': train_loss, 'epoch': epoch})
@@ -89,7 +91,8 @@ def train_net(args):
                           logger=logger,
                           epoch=epoch,
                           log_img_every=args.log_img_every,
-                          use_wandb=args.wandb)
+                          use_wandb=args.wandb,
+                          save_every_n_iterations=None) # no checkpoint saving for validation
 
         writer.add_scalar('Valid_Loss', valid_loss, epoch)
         if args.wandb:
@@ -104,15 +107,16 @@ def train_net(args):
         else:
             epochs_since_improvement = 0
         # Save checkpoint
-        save_checkpoint(epoch, epochs_since_improvement, model.state_dict(), optimizer, best_loss, is_best, args.save_dir, args.num_planes)
+        save_checkpoint(epoch, epochs_since_improvement, model.state_dict(), optimizer, best_loss, is_best, args.save_dir, args.num_planes, train_iteration=None)
 
 
-def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_wandb=False):
+def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_wandb=False, save_every_n_iterations=None):
     model.train()  # train mode (dropout and batchnorm is used)
 
     print("Training")
     losses = AverageMeter()
     criterion = VGGPerceptualLoss().to(device)
+    iteration = 0
     for i, (img, dep) in enumerate(tqdm(train_loader, desc="Training MPI")):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device, non_blocking=True)
@@ -161,6 +165,13 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
                     })
             except Exception:
                 pass
+
+        # save model every N training iterations
+        # NOTE:
+        if save_every_n_iterations is not None and iteration != 0 and iteration % save_every_n_iterations == 0:
+            save_checkpoint(epoch, iteration, model.state_dict(), optimizer, float("inf"), False, args.save_dir, args.num_planes, train_iteration=iteration)
+
+        iteration += 1
     return losses.avg
 
 
@@ -170,7 +181,7 @@ def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=Fal
     losses = AverageMeter()
     l2_loss = nn.MSELoss().to(device)
 
-    for i, (img, dep) in enumerate(tqdm(valid_loader)):
+    for i, (img, dep) in enumerate(tqdm(valid_loader, desc="Validating MPI")):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device, non_blocking=True)
         for k, v in dep.items():
@@ -210,17 +221,24 @@ def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=Fal
     return losses.avg
 
 
-def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss, is_best, dir, num_planes):
-    state = {'epoch': epoch,
-             'epochs_since_improvement': epochs_since_improvement,
-             'loss': loss,
-             'state_dict': state_dict,
-             'optimizer': optimizer,
-             'num_planes': num_planes}
+def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss, is_best, dir, num_planes, train_iteration=None):
+    state = {
+        'epoch': epoch,
+        'epochs_since_improvement': epochs_since_improvement,
+        'loss': loss,
+        'state_dict': state_dict,
+        'optimizer': optimizer,
+        'num_planes': num_planes
+    }
 
     if not os.path.exists(dir):
         os.makedirs(dir)
-    filename = os.path.join(dir, 'checkpoint.tar')
+
+
+    if train_iteration is not None: # if save_every_n_iterations is not None, save the checkpoint with the current iteration number
+        filename = os.path.join(dir, f'checkpoint_{epoch}_{train_iteration}.tar') # current checkpoint
+    else:
+        filename = os.path.join(dir, 'checkpoint.tar') # current end-of-epoch checkpoint
     torch.save(state, filename)
     # If this checkpoint is the best so far, store a copy so it doesn't get overwritten by a worse checkpoint
     if is_best:

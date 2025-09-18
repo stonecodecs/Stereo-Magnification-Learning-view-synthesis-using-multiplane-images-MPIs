@@ -62,12 +62,20 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
     # Iterate over the assigned shards (each shard has multiple scenes)
     for i in range(start_idx, end_idx):
         shard_path = self.shards[i]
-        scenes_in_shard = torch.load(shard_path)
+
+        try: 
+          scenes_in_shard = torch.load(shard_path, weights_only=False)
+        except Exception as e:
+          # if for whatever reason, the shard cannot load, skip
+          print(f"Error loading shard {shard_path}: {e}")
+          continue
         
         # Now iterate over each scene
         for scene in scenes_in_shard:
           # Dict scene:
           # url(str), timestamps (M,), cameras (M,18), images M[enc. jpeg], key (hash str)
+
+          try:
             if self.is_valid: # tests the first 3 images
               indexes = [0,1,2]
             else: # during training, draw random samples
@@ -132,6 +140,10 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 'data_id': scene['key'] # replacing text_id
             }
             yield [torch.squeeze(net_input).permute([2, 0, 1]), dep_var]
+          except Exception as e:
+            # if anything goes wrong with the scene, skip it
+            print(f"Error processing scene {shard_path} scene {scene['key']}: {e}")
+            continue
 
 if __name__ == '__main__':
   train_data = RealEstateDataset("/workspace/re10kvol/re10k")
