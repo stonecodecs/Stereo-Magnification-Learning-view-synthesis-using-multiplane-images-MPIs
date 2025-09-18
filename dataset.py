@@ -132,7 +132,7 @@ if __name__ == '__main__':
   train_data = RealEstateDataset("/workspace/re10kvol/re10k")
   # A DataLoader with multiple workers will load shards in parallel
   train_loader = torch.utils.data.DataLoader(
-    train_data, batch_size=2, num_workers=0, pin_memory=True)
+    train_data, batch_size=2, num_workers=8, pin_memory=True)
 
   for i, (input_data, target_data) in enumerate(train_loader):
       print(f"Batch {i+1} loaded.")

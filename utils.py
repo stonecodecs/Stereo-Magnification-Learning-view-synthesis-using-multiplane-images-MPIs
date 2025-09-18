@@ -56,7 +56,7 @@ def meshgrid_abs_torch(batch, height, width):
   """
   xs = torch.linspace(0.0, width-1, width)
   ys = torch.linspace(0.0, height-1, height)
-  ys, xs = torch.meshgrid(ys, xs)
+  ys, xs = torch.meshgrid(ys, xs, indexing='ij')
   ones = torch.ones_like(xs)
   coords = torch.stack([xs, ys, ones], axis=0)
   return torch.unsqueeze(coords, 0).repeat(batch, 1, 1, 1)

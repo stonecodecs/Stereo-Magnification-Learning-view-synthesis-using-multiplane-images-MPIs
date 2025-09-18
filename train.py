@@ -6,17 +6,17 @@ from tensorboardX import SummaryWriter
 from argparse import ArgumentParser
 
 from dataset import RealEstateDataset
-from networks import StereoMagnificationModel,VGGPerceptualLoss
+from networks import StereoMagnificationModel, VGGPerceptualLoss
 from utils import *
 
-img_size = (512, 288)
+img_size = (640, 360)  # W,H
 num_planes = 32
 lr = 2e-4
 batch_size = 1
 end_epoch = 20
 checkpoint = None
 print_freq = 20
-data_dir = "./real-estate-10k-run"
+data_dir = "/workspace/re10kvol/re10k"
 save_dir = 'checkpoints'
 
 parser = ArgumentParser(description="Train for MPIs")
@@ -29,7 +29,8 @@ parser.add_argument('--num_planes', default=num_planes, type=int, help="MPIs dep
 parser.add_argument('--end_epoch', default=end_epoch, type=int, help="Training epoch size")
 parser.add_argument('--lr', default=lr, type=float, help="Start learning rate")
 parser.add_argument('--batch_size', default=batch_size, type=int, help="Mini batch size")
-parser.add_argument('--print_freq', default=print_freq, type=int, help="Trining loss print frequency")
+parser.add_argument('--print_freq', default=print_freq, type=int, help="Training loss print frequency")
+
 
 def train_net(args):
     torch.manual_seed(7)
@@ -51,31 +52,31 @@ def train_net(args):
     else:
         model = StereoMagnificationModel(num_mpi_planes=args.num_planes)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    
     # Move to GPU, if available
     model = model.to(device)
 
     # Custom dataloaders
     train_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, num_workers=8, pin_memory=True)
+
     valid_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size, is_valid=True)
-    valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8)
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8)
+
     logger = get_logger()
 
-    # Epochs
     for epoch in range(start_epoch, args.end_epoch):
         train_loss = train(train_loader=train_loader,
-                            model=model,
-                            optimizer=optimizer,
-                            epoch=epoch,
-                            logger=logger)
-                            
+                          model=model,
+                          optimizer=optimizer,
+                          epoch=epoch,
+                          logger=logger)
         writer.add_scalar('Train_Loss', train_loss, epoch)
-        
         # One epoch's validation
         valid_loss = valid(valid_loader=valid_loader,
-                           model=model,
-                           logger=logger)
+                          model=model,
+                          logger=logger)
 
         writer.add_scalar('Valid_Loss', valid_loss, epoch)
 
@@ -87,7 +88,6 @@ def train_net(args):
             print("\nEpochs since last improvement: %d\n" % (epochs_since_improvement,))
         else:
             epochs_since_improvement = 0
-        
         # Save checkpoint
         save_checkpoint(epoch, epochs_since_improvement, model.state_dict(), optimizer, best_loss, is_best, args.save_dir, args.num_planes)
 
@@ -97,7 +97,6 @@ def train(train_loader, model, optimizer, epoch, logger):
 
     losses = AverageMeter()
     criterion = VGGPerceptualLoss().to(device)
-    
     for i, (img, dep) in enumerate(train_loader):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device)
@@ -116,7 +115,7 @@ def train(train_loader, model, optimizer, epoch, logger):
         # Print status
         if i % print_freq == 0:
             status = 'Epoch: [{0}][{1}/{2}]\t' \
-                     'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(epoch, i, len(train_loader), loss=losses)
+                    'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(epoch, i, len(train_loader), loss=losses)
             logger.info(status)
     return losses.avg
 
@@ -136,7 +135,7 @@ def valid(valid_loader, model, logger):
         out = model(img)
         rgba_layers = mpi_from_net_output(out, dep)
         rel_pose = torch.matmul(dep['tgt_img_cfw'], dep['ref_img_wfc']).to(device)
-        output_image  = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics']).to(device)
+        output_image = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics']).to(device)
 
         # Calculate loss
         loss = l2_loss(output_image, target)
@@ -163,6 +162,7 @@ def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss
     # If this checkpoint is the best so far, store a copy so it doesn't get overwritten by a worse checkpoint
     if is_best:
         torch.save(state, os.path.join(dir, 'BEST_checkpoint.tar'))
+
 
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
