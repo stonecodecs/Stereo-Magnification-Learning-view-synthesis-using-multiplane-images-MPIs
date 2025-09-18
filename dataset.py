@@ -91,8 +91,9 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 self.img_size[1] * fy,
                 self.img_size[0] * cx,
                 self.img_size[1] * cy,
+                device="cpu"
               )
-              extr = to_homogenous(make_extrinsics_matrix(Rt_flat))
+              extr = to_homogenous(make_extrinsics_matrix(Rt_flat)).to("cpu")
 
               # extract images
               img = decode_image(all_images[index], mode="RGB") # (C,H,W)
@@ -111,9 +112,9 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
             tgt_img = metadata[2] # target to learn
             
             # uniform disparity sampling
-            psv_planes = torch.Tensor(inv_depths(1, 100, self.num_planes))
+            psv_planes = torch.Tensor(inv_depths(1, 100, self.num_planes), device="cpu")
             curr_pose = torch.matmul(src_img['pose'], torch.inverse(ref_img['pose']))
-            curr_psv = plane_sweep_torch_one(src_img['image'], psv_planes, curr_pose, src_img['intrinsics'])
+            curr_psv = plane_sweep_torch_one(src_img['image'], psv_planes, curr_pose, src_img['intrinsics'], device="cpu")
             
             # N,H,W,3(D+1)
             net_input = torch.cat([torch.unsqueeze(ref_img['image'], 0), curr_psv], 3)

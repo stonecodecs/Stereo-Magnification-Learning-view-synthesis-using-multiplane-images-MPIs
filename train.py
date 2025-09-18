@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from argparse import ArgumentParser
+from tqdm import tqdm
 
 from dataset import RealEstateDataset
 from networks import StereoMagnificationModel, VGGPerceptualLoss
@@ -30,11 +31,12 @@ parser.add_argument('--end_epoch', default=end_epoch, type=int, help="Training e
 parser.add_argument('--lr', default=lr, type=float, help="Start learning rate")
 parser.add_argument('--batch_size', default=batch_size, type=int, help="Mini batch size")
 parser.add_argument('--print_freq', default=print_freq, type=int, help="Training loss print frequency")
+parser.add_argument('--seed', default=7, type=int, help="Training seed")
 
 
 def train_net(args):
-    torch.manual_seed(7)
-    np.random.seed(7)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
     start_epoch = 0
     best_loss = float('inf')
     writer = SummaryWriter()
@@ -46,7 +48,7 @@ def train_net(args):
         epoch = ckt['epoch']
         epochs_since_improvement = ckt['epochs_since_improvement']
         best_loss = ckt['loss']
-        model = StereoMagnificationModel(num_mpi_planes=ckt['numb_planes'])
+        model = StereoMagnificationModel(num_mpi_planes=ckt['num_planes'])
         model.load_state_dict = ckt['state_dict']
         optimizer = ckt['optimizer']
     else:
@@ -95,11 +97,15 @@ def train_net(args):
 def train(train_loader, model, optimizer, epoch, logger):
     model.train()  # train mode (dropout and batchnorm is used)
 
+    print("Training")
     losses = AverageMeter()
     criterion = VGGPerceptualLoss().to(device)
-    for i, (img, dep) in enumerate(train_loader):
+    for i, (img, dep) in enumerate(tqdm(train_loader), desc="Training MPI"):
         # Move to GPU, if available
-        img = img.type(torch.FloatTensor).to(device)
+        img = img.type(torch.FloatTensor).to(device, non_blocking=True)
+        for k, v in dep.items():
+            if isinstance(v, torch.Tensor): # only tensors
+                dep[k] = v.type(torch.FloatTensor).to(device, non_blocking=True)
 
         # Forward prop.
         out = model(img)  # [N, 3, 320, 320]
@@ -114,8 +120,8 @@ def train(train_loader, model, optimizer, epoch, logger):
 
         # Print status
         if i % print_freq == 0:
-            status = 'Epoch: [{0}][{1}/{2}]\t' \
-                    'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(epoch, i, len(train_loader), loss=losses)
+            status = 'Epoch: [{0}][step: {1}]\t' \
+                    'Loss {loss.val:.4f} (avg: {loss.avg:.4f})\t'.format(epoch, i, loss=losses)
             logger.info(status)
     return losses.avg
 
@@ -126,9 +132,12 @@ def valid(valid_loader, model, logger):
     losses = AverageMeter()
     l2_loss = nn.MSELoss().to(device)
 
-    for img, dep in valid_loader:
+    for img, dep in tqdm(valid_loader):
         # Move to GPU, if available
-        img = img.type(torch.FloatTensor).to(device)
+        img = img.type(torch.FloatTensor).to(device, non_blocking=True)
+        for k, v in dep.items():
+            if isinstance(v, torch.Tensor): # only tensors
+                dep[k] = v.type(torch.FloatTensor).to(device, non_blocking=True)
         target = dep['tgt_img'].to(device)
 
         # Forward prop.

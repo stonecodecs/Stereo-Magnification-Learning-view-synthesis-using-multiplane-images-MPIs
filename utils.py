@@ -44,7 +44,7 @@ def get_logger():
 def flatten(l):
   return [item for sublist in l for item in sublist]
   
-def meshgrid_abs_torch(batch, height, width):
+def meshgrid_abs_torch(batch, height, width, device='cuda'):
   """Construct a 2D meshgrid in the absolute (homogeneous) coordinates.
 
   Args:
@@ -54,17 +54,17 @@ def meshgrid_abs_torch(batch, height, width):
   Returns:
     x,y grid coordinates [batch, 3, height, width]
   """
-  xs = torch.linspace(0.0, width-1, width)
-  ys = torch.linspace(0.0, height-1, height)
+  xs = torch.linspace(0.0, width-1, width, device=device)
+  ys = torch.linspace(0.0, height-1, height, device=device)
   ys, xs = torch.meshgrid(ys, xs, indexing='ij')
-  ones = torch.ones_like(xs)
+  ones = torch.ones_like(xs, device=device)
   coords = torch.stack([xs, ys, ones], axis=0)
   return torch.unsqueeze(coords, 0).repeat(batch, 1, 1, 1)
 
-def divide_safe_torch(num, den, name=None):
+def divide_safe_torch(num, den, name=None, device='cuda'):  
   eps = 1e-8
   den = den.to(torch.float32)
-  den += eps * den.eq(torch.tensor(0, dtype=torch.float32))
+  den += eps * den.eq(torch.tensor(0, dtype=torch.float32, device=device))
   return torch.div(num.to(torch.float32), den)
 
 def transpose_torch(rot):
@@ -130,7 +130,7 @@ def normalize_homogeneous_torch(points):
   return divide_safe_torch(uv, w)
 
 
-def bilinear_wrapper_torch(imgs, coords):
+def bilinear_wrapper_torch(imgs, coords, device='cuda'):
   """Wrapper around bilinear sampling function, handles arbitrary input sizes.
 
   Args:
@@ -153,7 +153,7 @@ def bilinear_wrapper_torch(imgs, coords):
   # change image from (N, H, W, C) to (N, C, H, W)
   imgs = imgs.permute([0, 3, 1, 2])
   # TODO: resize coords from (0,1) to (-1, 1)
-  coords2 = torch.Tensor([-1, -1]) + 2.0 * coords
+  coords2 = torch.Tensor([-1, -1]).to(device) + 2.0 * coords
   imgs_sampled = torch.nn.functional.grid_sample(imgs, coords2, align_corners=True) ###
   # imgs_sampled = torch.div(2.0* (imgs_sampled0 + torch.Tensor([1.0, 1.0])).to(device), torch.Tensor([(x_max - x_min), (y_max - y_min)])).to(device)
   # permute back to (N, H, W, C)
@@ -186,7 +186,7 @@ def over_composite(rgbas):
   return output
 
 
-def transform_plane_imgs_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a):
+def transform_plane_imgs_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a, device='cuda'):
   """Transforms input imgs via homographies for corresponding planes.
 
   Args:
@@ -214,17 +214,17 @@ def transform_plane_imgs_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, 
   # convert from [0-height-1, width -1] to [0-1, 0-1]
   height_t = pixel_coords_trg.shape[-3]
   width_t = pixel_coords_trg.shape[-2]
-  pixel_coords_t2s = pixel_coords_t2s / torch.Tensor([width_t - 1, height_t - 1])
+  pixel_coords_t2s = pixel_coords_t2s / torch.Tensor([width_t - 1, height_t - 1]).to(device)
 
   # print("pixel_coords_t2s ", L(pixel_coords_t2s))
 
-  imgs_s2t = bilinear_wrapper_torch(imgs, pixel_coords_t2s)
+  imgs_s2t = bilinear_wrapper_torch(imgs, pixel_coords_t2s, device=device)
   #print("imgs_s2t ", L(imgs_s2t))
 
   return imgs_s2t
 
 
-def planar_transform_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a):
+def planar_transform_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a, device='cuda'):
   """Transforms imgs, masks and computes dmaps according to planar transform.
 
   Args:
@@ -258,12 +258,12 @@ def planar_transform_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a):
   pixel_coords_trg = torch.unsqueeze(pixel_coords_trg, 0).repeat(cds_rep_dims)
 
   imgs_trg = transform_plane_imgs_torch(
-      imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a)
+      imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a, device=device)
   return imgs_trg
 
   # And no subtle bug here fuckers!
 
-def projective_forward_homography_torch(src_images, intrinsics, pose, depths):
+def projective_forward_homography_torch(src_images, intrinsics, pose, depths, device='cuda'):
   """Use homography for forward warping.
 
   Args:
@@ -283,17 +283,17 @@ def projective_forward_homography_torch(src_images, intrinsics, pose, depths):
   # a: [L, B, 1, 1], plane equation displacement (n_hat * p_src + a = 0)
   rot = pose[:, :3, :3]
   t = pose[:, :3, 3:]
-  n_hat = torch.Tensor([0., 0., 1.]).reshape([1,1,1,3]) # tf.constant([0., 0., 1.], shape=[1, 1, 1, 3])
+  n_hat = torch.Tensor([0., 0., 1.]).reshape([1,1,1,3]).to(device) # tf.constant([0., 0., 1.], shape=[1, 1, 1, 3])
   n_hat = n_hat.repeat([n_layers, n_batch, 1, 1])
   a = -torch.reshape(depths, [n_layers, n_batch, 1, 1])
   k_s = intrinsics
   k_t = intrinsics
-  pixel_coords_trg = meshgrid_abs_torch(n_batch, height, width).permute([0, 2, 3, 1])
+  pixel_coords_trg = meshgrid_abs_torch(n_batch, height, width, device=device).permute([0, 2, 3, 1])
   proj_src_images = planar_transform_torch(
       src_images, pixel_coords_trg, k_s, k_t, rot, t, n_hat, a)
   return proj_src_images
 
-def mpi_render_view_torch(rgba_layers, tgt_pose, planes, intrinsics):
+def mpi_render_view_torch(rgba_layers, tgt_pose, planes, intrinsics, device='cuda'):
     """Render a target view from an MPI representation.
 
     Args:
@@ -311,7 +311,7 @@ def mpi_render_view_torch(rgba_layers, tgt_pose, planes, intrinsics):
     # to [#planes, batch, height, width, 4]
     rgba_layers = rgba_layers.permute([3, 0, 1, 2, 4])
     proj_images = projective_forward_homography_torch(rgba_layers, intrinsics,
-                                                   tgt_pose, depths)
+                                                   tgt_pose, depths, device=device)
     # proj_images is [#planes, batch, 4, height, width]
     # change to [#planes, batch, H, W, 4]
     proj_images = proj_images.permute([0, 1, 3, 4, 2])
@@ -322,7 +322,7 @@ def mpi_render_view_torch(rgba_layers, tgt_pose, planes, intrinsics):
     output_image = over_composite(proj_images_list) # same as tensorflow's version!
     return output_image
 
-def inv_depths(start_depth, end_depth, num_depths):
+def inv_depths(start_depth, end_depth, num_depths, device='cuda'):
     """Sample reversed, sorted inverse depths between a near and far plane.
 
     Args:
@@ -345,11 +345,11 @@ def inv_depths(start_depth, end_depth, num_depths):
     depths = sorted(depths)
     return depths[::-1]
 
-def open_image(fname, size=224, format=False):
+def open_image(fname, size=224, format=False, device='cuda'):
     img = PIL.Image.open(fname).convert('RGB')
     if size is not None:
         img = img.resize((size, size))
-    t = torch.Tensor(np.array(img))
+    t = torch.Tensor(np.array(img)).to(device)
     # t.permute(2,0,1).float()/255.0
     if format:
       return t.float()/255.0
@@ -376,7 +376,7 @@ def deprocess_image_torch(image):
     return (((image + 1.) / 2.) *255).type(torch.ByteTensor)
 
 
-def pixel2cam_torch(depth, pixel_coords, intrinsics, is_homogeneous=True):
+def pixel2cam_torch(depth, pixel_coords, intrinsics, is_homogeneous=True, device='cuda'):
   """Transforms coordinates in the pixel frame to the camera frame.
 
   Args:
@@ -392,7 +392,7 @@ def pixel2cam_torch(depth, pixel_coords, intrinsics, is_homogeneous=True):
   pixel_coords = torch.reshape(pixel_coords, [batch, 3, -1])
   cam_coords = torch.matmul(torch.inverse(intrinsics), pixel_coords) * depth
   if is_homogeneous:
-    ones = torch.ones([batch, 1, height*width])
+    ones = torch.ones([batch, 1, height*width], device=device)
     cam_coords = torch.cat([cam_coords, ones], axis=1)
   cam_coords = torch.reshape(cam_coords, [batch, -1, height, width])
   return cam_coords
@@ -415,7 +415,7 @@ def cam2pixel_torch(cam_coords, proj):
   pixel_coords = torch.reshape(pixel_coords, [batch, 2, height, width])
   return pixel_coords.permute([0, 2, 3, 1])
 
-def resampler_wrapper_torch(imgs, coords):
+def resampler_wrapper_torch(imgs, coords, device='cuda'):
   """
   equivalent to tfa.image.resampler
   Args:
@@ -426,11 +426,11 @@ def resampler_wrapper_torch(imgs, coords):
   """
   return torch.nn.functional.grid_sample(
       imgs.permute([0, 3, 1, 2]),             # change images from (N, H, W, C) to (N, C, H, W)
-      torch.Tensor([-1, -1]) + 2.0 * coords   # resize coords from (0,1) to (-1, 1)
+      torch.Tensor([-1, -1]).to(device) + 2.0 * coords   # resize coords from (0,1) to (-1, 1)
       , align_corners=True).permute([0, 2, 3, 1])                 # change result from (N, C, H, W) to (N, H, W, C)
 
 def projective_inverse_warp_torch(
-    img, depth, pose, intrinsics, ret_flows=False):
+    img, depth, pose, intrinsics, ret_flows=False, device='cuda'):
   """Inverse warp a source image to the target image plane based on projection.
 
   Args:
@@ -445,15 +445,15 @@ def projective_inverse_warp_torch(
   """
   batch, height, width, _ = img.shape
   # Construct pixel grid coordinates.
-  pixel_coords = meshgrid_abs_torch(batch, height, width)
+  pixel_coords = meshgrid_abs_torch(batch, height, width, device=device)
 
   # Convert pixel coordinates to the camera frame.
-  cam_coords = pixel2cam_torch(depth, pixel_coords, intrinsics)
+  cam_coords = pixel2cam_torch(depth, pixel_coords, intrinsics, device=device)
 
   # Construct a 4x4 intrinsic matrix.
-  filler = torch.Tensor([[[0., 0., 0., 1.]]])
+  filler = torch.Tensor([[[0., 0., 0., 1.]]]).to(device)
   filler = filler.repeat(batch, 1, 1)
-  intrinsics = torch.cat([intrinsics, torch.zeros([batch, 3, 1])], axis=2)
+  intrinsics = torch.cat([intrinsics, torch.zeros([batch, 3, 1], device=device)], axis=2)
   intrinsics = torch.cat([intrinsics, filler], axis=1)
   # Get a 4x4 transformation matrix from 'target' camera frame to 'source'
   # pixel frame.
@@ -463,14 +463,14 @@ def projective_inverse_warp_torch(
   #print(f'src_pixel_coords shape {src_pixel_coords.shape}')
   #print(f'src_pixel_coords {L(src_pixel_coords[:, :, :3,:])}')
 
-  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5])) / torch.Tensor([width, height])
-  output_img = resampler_wrapper_torch(img, src_pixel_coords)
+  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5]).to(device)) / torch.Tensor([width, height]).to(device)
+  output_img = resampler_wrapper_torch(img, src_pixel_coords, device=device)
   if ret_flows:
     return output_img, src_pixel_coords - cam_coords
   else:
     return output_img
 
-def plane_sweep_torch(img, depth_planes, pose, intrinsics):
+def plane_sweep_torch(img, depth_planes, pose, intrinsics, device='cuda'):
   """Construct a plane sweep volume.
 
   Args:
@@ -485,14 +485,14 @@ def plane_sweep_torch(img, depth_planes, pose, intrinsics):
   plane_sweep_volume = []
 
   for depth in depth_planes:
-    curr_depth = torch.zeros([batch, height, width], dtype=torch.float32) + depth
+    curr_depth = torch.zeros([batch, height, width], dtype=torch.float32, device=device) + depth
     warped_img = projective_inverse_warp_torch(img, curr_depth, pose, intrinsics)
     plane_sweep_volume.append(warped_img)
   plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
   return plane_sweep_volume
 
 def format_network_input_torch(ref_image, psv_src_images, ref_pose,
-                           psv_src_poses, planes, intrinsics):
+                           psv_src_poses, planes, intrinsics, device='cuda'):
     """Format the network input (reference source image + PSV of the 2nd image).
 
     Args:
@@ -513,7 +513,7 @@ def format_network_input_torch(ref_image, psv_src_images, ref_pose,
     for i in range(num_psv_source):
       curr_pose = torch.matmul(psv_src_poses[:, i], torch.inverse(ref_pose))
       curr_image = psv_src_images[:, :, :, i * 3:(i + 1) * 3]
-      curr_psv = plane_sweep_torch(curr_image, planes, curr_pose, intrinsics)
+      curr_psv = plane_sweep_torch(curr_image, planes, curr_pose, intrinsics, device=device)
       net_input.append(curr_psv)
     net_input = torch.cat(net_input, axis=3)
     return net_input
@@ -527,7 +527,7 @@ def show_torch_image(image):
   pil_img = toPIL(image.float()/255.0).convert("RGB")
   plt.imshow(pil_img)
 
-def plane_sweep_torch_one(img, depth_planes, pose, intrinsics):
+def plane_sweep_torch_one(img, depth_planes, pose, intrinsics, device='cuda'):
   """Construct a plane sweep volume.
 
   Args:
@@ -543,13 +543,13 @@ def plane_sweep_torch_one(img, depth_planes, pose, intrinsics):
   plane_sweep_volume = []
 
   for depth in depth_planes:
-    curr_depth = torch.zeros([height, width], dtype=torch.float32) + depth
-    warped_img = projective_inverse_warp_torch(torch.unsqueeze(img, 0), torch.unsqueeze(curr_depth, 0), torch.unsqueeze(pose, 0), torch.unsqueeze(intrinsics, 0))
+    curr_depth = torch.zeros([height, width], dtype=torch.float32, device=device) + depth
+    warped_img = projective_inverse_warp_torch(torch.unsqueeze(img, 0), torch.unsqueeze(curr_depth, 0), torch.unsqueeze(pose, 0), torch.unsqueeze(intrinsics, 0), device=device)
     plane_sweep_volume.append(warped_img)
   plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
   return plane_sweep_volume
 
-def scale_intrinsics(intrinsics, height, width):
+def scale_intrinsics(intrinsics, height, width, device='cuda'):
   """ scale intrinsics with the (height, width) factors
     Args:
       intrinsics: [3, 3]
@@ -560,10 +560,10 @@ def scale_intrinsics(intrinsics, height, width):
     [width, 1.0, width],
     [0.0, height, height],
     [0.0, 0.0, 1.0]
-  ])
+  ]).to(device)
 
 
-def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
+def resize_with_intrinsics_torch(image_path, intrinsics, height, width, device='cuda'):
     """
     Args:
       image: PIL image
@@ -584,17 +584,17 @@ def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
         width / input_width,
     )
     scaled_image = img.resize((width, height))
-    tensor_image = preprocess_image_torch(torch.Tensor(np.array(scaled_image))/255.0)
+    tensor_image = preprocess_image_torch(torch.Tensor(np.array(scaled_image))/255.0).to(device)
     
     return tensor_image, scaled_pixel_intrinsics
 
 # fx, fy, cx, cy are simple scalars/floats
-def make_intrinsics_matrix(fx, fy, cx, cy):
+def make_intrinsics_matrix(fx, fy, cx, cy, device='cuda'):
   return torch.Tensor([
     [fx, 0.0, cx],
     [0.0, fy, cy],
     [0.0, 0.0, 1.0]
-  ])
+  ]).to(device)
 
 def read_file_lines(filename):
   """Reads a text file, skips comments, and lines.
@@ -614,7 +614,7 @@ def read_file_lines(filename):
     return [l.replace('\n', '') for l in lines if l[0] != '#']
 
 
-def crop_to_bounding_box_torch(image, offset_y, offset_x, height, width):
+def crop_to_bounding_box_torch(image, offset_y, offset_x, height, width, device='cuda'):
   """Crop an image to a bounding box
 
   Args:
@@ -629,14 +629,14 @@ def crop_to_bounding_box_torch(image, offset_y, offset_x, height, width):
 
   """
   batch, img_height, img_width, _ = image.shape
-  crop_grid = meshgrid_abs_torch(batch, height, width) # [batch, C=3, H, W]
-  crop_grid = crop_grid[:,:2].permute(0,2,3,1) + torch.Tensor([offset_x + 0.5,offset_y + 0.5])# [batch, H, W, 2]
-  crop_grid = crop_grid / torch.Tensor([img_width, img_height])
+  crop_grid = meshgrid_abs_torch(batch, height, width, device=device) # [batch, C=3, H, W]
+  crop_grid = crop_grid[:,:2].permute(0,2,3,1) + torch.Tensor([offset_x + 0.5,offset_y + 0.5]).to(device)# [batch, H, W, 2]
+  crop_grid = crop_grid / torch.Tensor([img_width, img_height], device=device)
 
   return resampler_wrapper_torch(image, crop_grid)
 
 def crop_image_and_adjust_intrinsics_torch(
-    image, intrinsics, offset_y, offset_x, height, width):
+    image, intrinsics, offset_y, offset_x, height, width, device='cuda'):
   """Crop images and adjust instrinsics accordingly.
 
   Args:
@@ -656,19 +656,19 @@ def crop_image_and_adjust_intrinsics_torch(
 
   # intrinsics = [fx fy cx cy]
   # Convert to pixels, offset, and normalise to cropped size.
-  pixel_intrinsics = scale_intrinsics(intrinsics, original_height, original_width)
+  pixel_intrinsics = scale_intrinsics(intrinsics, original_height, original_width, device=device)
   cropped_pixel_intrinsics = pixel_intrinsics - torch.Tensor([
     [0., 0., float(offset_x)],
     [0., 0., float(offset_y)],
     [0., 0., 0.]
-  ])
+  ]).to(device)
   cropped_intrinsics = scale_intrinsics(cropped_pixel_intrinsics, 1./height, 1./width)
-  cropped_images = crop_to_bounding_box_torch(image, offset_y, offset_x, height, width)
+  cropped_images = crop_to_bounding_box_torch(image, offset_y, offset_x, height, width, device=device)
   return cropped_images, cropped_intrinsics
 
 def projective_pixel_transform(
     depth, src_pixel_coords, src_pose, tgt_pose, src_intrinsics, tgt_intrinsics,
-    tgt_height, tgt_width
+    tgt_height, tgt_width, device='cuda'
 ):
   """
     Projects from a source camera pixel to a target camera pixel
@@ -687,9 +687,9 @@ def projective_pixel_transform(
   batch = depth.shape[0]
   src_cam_coords = pixel2cam_torch(depth, src_pixel_coords, src_intrinsics)
 
-  filler = torch.Tensor([[[0., 0., 0., 1.]]])
+  filler = torch.Tensor([[[0., 0., 0., 1.]]]).to(device)
   filler = filler.repeat(batch, 1, 1)
-  tgt_intrinsics4 = torch.cat([tgt_intrinsics, torch.zeros([batch, 3, 1])], axis=2)
+  tgt_intrinsics4 = torch.cat([tgt_intrinsics, torch.zeros([batch, 3, 1], device=device)], axis=2)
   tgt_intrinsics4 = torch.cat([tgt_intrinsics4, filler], axis=1)
   
   # source camera coords to target camera coords
@@ -756,13 +756,13 @@ def projective_inverse_warp_torch2(
   """
   batch, height, width, _ = img.shape
   # Construct pixel grid coordinates.
-  pixel_coords = meshgrid_abs_torch(batch, tgt_height, tgt_width)
+  pixel_coords = meshgrid_abs_torch(batch, tgt_height, tgt_width, device=device)
 
   # Convert pixel coordinates to the camera frame.
-  cam_coords = pixel2cam_torch(depth, pixel_coords, tgt_intrinsics)
+  cam_coords = pixel2cam_torch(depth, pixel_coords, tgt_intrinsics, device=device)
 
   # Construct a 4x4 intrinsic matrix.
-  filler = torch.Tensor([[[0., 0., 0., 1.]]])
+  filler = torch.Tensor([[[0., 0., 0., 1.]]]).to(device)
   filler = filler.repeat(batch, 1, 1)
   src_intrinsics4 = torch.cat([src_intrinsics, torch.zeros([batch, 3, 1])], axis=2)
   src_intrinsics4 = torch.cat([src_intrinsics4, filler], axis=1)
@@ -775,15 +775,15 @@ def projective_inverse_warp_torch2(
   #print(f'src_pixel_coords shape {src_pixel_coords.shape}')
   #print(f'src_pixel_coords {L(src_pixel_coords[:, :, :3,:])}')
 
-  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5]) ) / torch.Tensor([width, height])
+  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5]).to(device) ) / torch.Tensor([width, height]).to(device)
 
-  output_img = resampler_wrapper_torch(img, src_pixel_coords)
+  output_img = resampler_wrapper_torch(img, src_pixel_coords, device=device)
   if ret_flows:
     return output_img, src_pixel_coords - cam_coords
   else:
     return output_img
 
-def plane_sweep_torch_one2(img, depth_planes, pose, src_intrinsics, tgt_intrinsics, tgt_height, tgt_width):
+def plane_sweep_torch_one2(img, depth_planes, pose, src_intrinsics, tgt_intrinsics, tgt_height, tgt_width, device='cuda'):
   """Construct a plane sweep volume.
 
   Args:
@@ -803,7 +803,7 @@ def plane_sweep_torch_one2(img, depth_planes, pose, src_intrinsics, tgt_intrinsi
   plane_sweep_volume = []
 
   for depth in depth_planes:
-    curr_depth = torch.zeros([tgt_height, tgt_width], dtype=torch.float32) + depth
+    curr_depth = torch.zeros([tgt_height, tgt_width], dtype=torch.float32, device=device) + depth
     warped_img = projective_inverse_warp_torch2(
         torch.unsqueeze(img, 0), torch.unsqueeze(curr_depth, 0), 
         torch.unsqueeze(pose, 0), torch.unsqueeze(src_intrinsics, 0), 
@@ -825,7 +825,10 @@ def mpi_from_net_output(mpi_pred, dep):
     # reshape mpi_pred to [batch, height, width, channels]
     mpi_pred = mpi_pred.permute(0, 2, 3, 1)
     #print('mpi_pred.shape', mpi_pred.shape)
-    num_mpi_planes = dep['mpi_planes'].shape[0] # [planes]
+    if len(dep['mpi_planes'].shape) == 1:
+        num_mpi_planes = dep['mpi_planes'].shape[0] # [planes]
+    else:
+        num_mpi_planes = dep['mpi_planes'].shape[-1] # [batch, planes]
     # Rescale blend_weights to (0, 1)
     blend_weights = (mpi_pred[:, :, :, :num_mpi_planes] + 1.) / 2.
     # Rescale alphas to (0, 1)
@@ -854,26 +857,14 @@ def save_image(img, path):
 
 ## Added helpers:
 
-def make_extrinsics_matrix(Rt_flat):
-    Rt = torch.zeros(3, 4)
+def make_extrinsics_matrix(Rt_flat, device='cuda'):
+    Rt = torch.zeros(3, 4, device=device)
     Rt[0, :] = Rt_flat[0:4]
     Rt[1, :] = Rt_flat[4:8]
     Rt[2, :] = Rt_flat[8:12]
     return Rt
 
-def to_homogenous(mat):
-    mat_ = torch.cat([mat, torch.zeros(1, mat.shape[1])], dim=0)
+def to_homogenous(mat, device='cuda'):
+    mat_ = torch.cat([mat, torch.zeros(1, mat.shape[1], device=device)], dim=0)
     mat_[3, 3] = 1
     return mat_
-
-def load_images_torchvision(example_path):
-    """
-    Load images as float32 tensors in [-1,1], shape [C,H,W].
-    """
-    images = {}
-    for path in example_path.iterdir():
-        # read_image returns uint8 [C,H,W]
-        img = read_image(str(path), mode=torchvision.io.ImageReadMode.RGB)
-        # convert to float32 in [-1,1]
-        images[int(path.stem)] = img.float() / 255.0 * 2 - 1
-    return images
