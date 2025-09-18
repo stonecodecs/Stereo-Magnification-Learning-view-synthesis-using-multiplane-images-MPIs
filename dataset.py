@@ -71,7 +71,11 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
             if self.is_valid: # tests the first 3 images
               indexes = [0,1,2]
             else: # during training, draw random samples
-              indexes = self._draw(scene)
+              # if does not pass the assertion within it, skip to the next scene
+              try: 
+                indexes = self._draw(scene)
+              except AssertionError:
+                continue
             
             all_images = scene['images']
             all_cameras = scene['cameras']
