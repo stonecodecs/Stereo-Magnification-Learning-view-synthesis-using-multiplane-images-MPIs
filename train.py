@@ -50,14 +50,17 @@ def train_net(args):
     epochs_since_improvement = 0
 
     # load checkpoint
-    if args.checkpoint is not None:
-        if args.checkpoint == "latest":
-            # assumes only one checkpoint_at_step ckpt exists!
-            for existing_file in os.listdir(args.save_dir):
-                if existing_file.startswith('checkpoint_at_step') and existing_file.endswith('.tar'):
-                    args.checkpoint = os.path.join(args.save_dir, existing_file)
-                    break
+    if args.checkpoint == "latest":
+        # assumes only one checkpoint_at_step ckpt exists!
+        for existing_file in os.listdir(args.save_dir):
+            if existing_file.startswith('checkpoint_at_step') and existing_file.endswith('.tar'):
+                args.checkpoint = os.path.join(args.save_dir, existing_file)
+                break
 
+    if args.checkpoint == "best":
+        args.checkpoint = os.path.join(args.save_dir, 'BEST_checkpoint.tar')
+
+    if args.checkpoint is not None and os.path.exists(args.checkpoint):
         ckt = torch.load(args.checkpoint, weights_only=False)
         epoch = ckt['epoch']
         epochs_since_improvement = ckt['epochs_since_improvement']
@@ -70,7 +73,7 @@ def train_net(args):
         # ! if checkpoint is within the checkpoints directory (save_dir),
         # ! then this will be deleted & replaced by the new checkpoint!
         # ! if you want to keep, SAVE IT OUTSIDE!
-    else:
+    else: # if no checkpoint exists, initialize a new model
         model = StereoMagnificationModel(num_mpi_planes=args.num_planes)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     # Move to GPU, if available
