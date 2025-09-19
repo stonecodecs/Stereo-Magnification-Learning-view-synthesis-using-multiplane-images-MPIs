@@ -149,10 +149,10 @@ class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True, img_size=224):
         super(VGGPerceptualLoss, self).__init__()
         blocks = []
-        blocks.append(torchvision.models.vgg19(pretrained=True).features[:4].eval())
-        blocks.append(torchvision.models.vgg19(pretrained=True).features[4:9].eval())
-        blocks.append(torchvision.models.vgg19(pretrained=True).features[9:16].eval())
-        blocks.append(torchvision.models.vgg19(pretrained=True).features[16:23].eval())
+        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:4].eval())
+        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[4:9].eval())
+        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[9:16].eval())
+        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[16:23].eval())
         for bl in blocks:
             for p in bl.parameters():
                 p.requires_grad = False

@@ -6,7 +6,7 @@ from tensorboardX import SummaryWriter
 from argparse import ArgumentParser
 from tqdm import tqdm
 import wandb
-
+import math
 from dataset import RealEstateDataset
 from networks import StereoMagnificationModel, VGGPerceptualLoss
 from utils import *
@@ -18,9 +18,11 @@ batch_size = 1
 end_epoch = 20
 checkpoint = None
 print_freq = 100
-data_dir = "/workspace/re10kvol/re10k"
-save_dir = 'checkpoints'
+# data_dir = "/workspace/re10kvol/re10k"
+data_dir = "/workspace/mockvol"
+save_dir = '/workspace/mpi/checkpoints'
 seed = 7
+global_step = 0
 
 parser = ArgumentParser(description="Train for MPIs")
 
@@ -40,6 +42,7 @@ parser.add_argument('--save_every_n_iterations', default=None, type=int, help="S
 
 
 def train_net(args):
+    global global_step
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     start_epoch = 0
@@ -56,6 +59,7 @@ def train_net(args):
         model = StereoMagnificationModel(num_mpi_planes=ckt['num_planes'])
         model.load_state_dict = ckt['state_dict']
         optimizer = ckt['optimizer']
+        global_step = ckt['global_step']
     else:
         model = StereoMagnificationModel(num_mpi_planes=args.num_planes)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -65,11 +69,11 @@ def train_net(args):
     # Custom dataloaders
     train_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size)
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, num_workers=8, pin_memory=True)
+        train_dataset, batch_size=args.batch_size, num_workers=8, pin_memory=True, prefetch_factor=2)
 
     valid_dataset = RealEstateDataset(args.data_dir, img_size=args.img_size, is_valid=True)
     valid_loader = torch.utils.data.DataLoader(
-        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=2)
 
     logger = get_logger()
 
@@ -91,8 +95,8 @@ def train_net(args):
                           logger=logger,
                           epoch=epoch,
                           log_img_every=args.log_img_every,
-                          use_wandb=args.wandb,
-                          save_every_n_iterations=None) # no checkpoint saving for validation
+                          use_wandb=args.wandb
+                          ) # no checkpoint saving for validation
 
         writer.add_scalar('Valid_Loss', valid_loss, epoch)
         if args.wandb:
@@ -107,16 +111,16 @@ def train_net(args):
         else:
             epochs_since_improvement = 0
         # Save checkpoint
-        save_checkpoint(epoch, epochs_since_improvement, model.state_dict(), optimizer, best_loss, is_best, args.save_dir, args.num_planes, train_iteration=None)
+        save_checkpoint(epoch, epochs_since_improvement, model.state_dict(), optimizer, best_loss, is_best, args.save_dir, args.num_planes, global_step=global_step)
 
 
 def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_wandb=False, save_every_n_iterations=None):
+    global global_step
     model.train()  # train mode (dropout and batchnorm is used)
 
     print("Training")
     losses = AverageMeter()
     criterion = VGGPerceptualLoss().to(device)
-    iteration = 0
     for i, (img, dep) in enumerate(tqdm(train_loader, desc="Training MPI")):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device, non_blocking=True)
@@ -133,7 +137,7 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
 
         # wandb: per-iter loss
         if use_wandb:
-            wandb.log({'train/loss': loss.item(), 'epoch': epoch, 'iter': i})
+            wandb.log({'train/loss': loss.item(), 'epoch': epoch, 'iter': i, "global_step": global_step})
 
         optimizer.zero_grad()
         loss.backward()
@@ -161,17 +165,17 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
                         'train/target_image': wandb.Image(tgt_vis),
                         'train/ref_image': wandb.Image(ref_vis),
                         'epoch': epoch,
-                        'iter': i
+                        'iter': i,
+                        'global_step': global_step
                     })
             except Exception:
                 pass
 
         # save model every N training iterations
         # NOTE:
-        if save_every_n_iterations is not None and iteration != 0 and iteration % save_every_n_iterations == 0:
-            save_checkpoint(epoch, iteration, model.state_dict(), optimizer, float("inf"), False, args.save_dir, args.num_planes, train_iteration=iteration)
-
-        iteration += 1
+        if save_every_n_iterations is not None and global_step != 0 and global_step % save_every_n_iterations == 0:
+            save_checkpoint(epoch, -1, model.state_dict(), optimizer, None, False, args.save_dir, args.num_planes, global_step=global_step)
+        global_step += 1
     return losses.avg
 
 
@@ -221,22 +225,27 @@ def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=Fal
     return losses.avg
 
 
-def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss, is_best, dir, num_planes, train_iteration=None):
+def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss, is_best, dir, num_planes, global_step=None):
     state = {
         'epoch': epoch,
         'epochs_since_improvement': epochs_since_improvement,
-        'loss': loss,
+        'loss': loss if loss is not None else float('inf'),
         'state_dict': state_dict,
         'optimizer': optimizer,
-        'num_planes': num_planes
+        'num_planes': num_planes,
+        'global_step': global_step
     }
 
     if not os.path.exists(dir):
         os.makedirs(dir)
 
 
-    if train_iteration is not None: # if save_every_n_iterations is not None, save the checkpoint with the current iteration number
-        filename = os.path.join(dir, f'checkpoint_{epoch}_{train_iteration}.tar') # current checkpoint
+    if global_step is not None: # if save_every_n_iterations is not None, save the checkpoint with the current iteration number
+        filename = os.path.join(dir, f'checkpoint_at_step_{global_step}.tar') # current checkpoint
+        # Remove any existing checkpoint_at_step files
+        for existing_file in os.listdir(dir):
+            if existing_file.startswith('checkpoint_at_step') and existing_file.endswith('.tar'):
+                os.remove(os.path.join(dir, existing_file))
     else:
         filename = os.path.join(dir, 'checkpoint.tar') # current end-of-epoch checkpoint
     torch.save(state, filename)
