@@ -3,6 +3,7 @@ import PIL
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 
 from utils import *
 
@@ -149,10 +150,10 @@ class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True, img_size=224):
         super(VGGPerceptualLoss, self).__init__()
         blocks = []
-        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:4].eval())
-        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[4:9].eval())
-        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[9:16].eval())
-        blocks.append(torchvision.models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[16:23].eval())
+        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[:4].eval())
+        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[4:9].eval())
+        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[9:16].eval())
+        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[16:23].eval())
         for bl in blocks:
             for p in bl.parameters():
                 p.requires_grad = False

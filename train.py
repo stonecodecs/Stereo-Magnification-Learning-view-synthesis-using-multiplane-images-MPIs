@@ -18,8 +18,7 @@ batch_size = 1
 end_epoch = 20
 checkpoint = None
 print_freq = 100
-# data_dir = "/workspace/re10kvol/re10k"
-data_dir = "/workspace/mockvol"
+data_dir = "/workspace/re10kvol/re10k"
 save_dir = '/workspace/mpi/checkpoints'
 seed = 7
 global_step = 0
@@ -28,7 +27,7 @@ parser = ArgumentParser(description="Train for MPIs")
 
 parser.add_argument('--save_dir', default=save_dir, type=str, help="Directory of save checkpoint")
 parser.add_argument('--data_dir', default=data_dir, type=str, help="Directory of real-estate data")
-parser.add_argument('--checkpoint', default=checkpoint, type=str, help="Directory of load checkpoint to resume training.")
+parser.add_argument('--checkpoint', default=checkpoint, type=str, help="Directory of load checkpoint to resume training. 'latest' to automatically load the last checkpoint_at_step_<global_step>.tar")
 parser.add_argument('--img_size', default=img_size, type=int, help="training data image resolution")
 parser.add_argument('--num_planes', default=num_planes, type=int, help="MPIs depths")
 parser.add_argument('--end_epoch', default=end_epoch, type=int, help="Training epoch size")
@@ -52,7 +51,14 @@ def train_net(args):
 
     # load checkpoint
     if args.checkpoint is not None:
-        ckt = torch.load(args.checkpoint)
+        if args.checkpoint == "latest":
+            # assumes only one checkpoint_at_step ckpt exists!
+            for existing_file in os.listdir(args.save_dir):
+                if existing_file.startswith('checkpoint_at_step') and existing_file.endswith('.tar'):
+                    args.checkpoint = os.path.join(args.save_dir, existing_file)
+                    break
+
+        ckt = torch.load(args.checkpoint, weights_only=False)
         epoch = ckt['epoch']
         epochs_since_improvement = ckt['epochs_since_improvement']
         best_loss = ckt['loss']
@@ -60,6 +66,10 @@ def train_net(args):
         model.load_state_dict = ckt['state_dict']
         optimizer = ckt['optimizer']
         global_step = ckt['global_step']
+        print("\nLoaded checkpoint from", args.checkpoint)
+        # ! if checkpoint is within the checkpoints directory (save_dir),
+        # ! then this will be deleted & replaced by the new checkpoint!
+        # ! if you want to keep, SAVE IT OUTSIDE!
     else:
         model = StereoMagnificationModel(num_mpi_planes=args.num_planes)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
