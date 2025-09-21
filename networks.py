@@ -71,7 +71,6 @@ def ConvLayer(ni, nf, ks=3, stride=1, padding=None, bias=None, norm_type='bn', t
     return nn.Sequential(*conv_layer)
 
 class StereoMagnificationModel(nn.Module):
-
   def __init__(self, num_mpi_planes, nfg=64, res=[720, 1080]):
     super(StereoMagnificationModel, self).__init__()
     
@@ -146,14 +145,76 @@ class StereoMagnificationModel(nn.Module):
     
     return out_cnv8_1
 
+
+# class VGGPerceptualLoss(torch.nn.Module):
+#     def __init__(self, resize=True, img_size=224, device="cuda"):
+#         super().__init__()
+#         # Load pretrained VGG19 features only
+#         vgg_feats = torchvision.models.vgg19(
+#             weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1
+#         ).features.eval()
+
+#         # Freeze params
+#         for p in vgg_feats.parameters():
+#             p.requires_grad = False
+
+#         self.vgg_feats = vgg_feats
+#         self.target_layers = {3, 8, 13, 22, 31}  # ReLU after conv{1..5}_2
+#         self.resize = resize
+#         self.img_size = img_size
+
+#         self.mean_const = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+#         self.std_const = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+
+#     def forward(self, mpi_pred, dep):
+#         # Render MPI -> image pair
+#         rgba_layers = mpi_from_net_output(mpi_pred, dep)
+#         rel_pose = torch.matmul(dep['tgt_img_cfw'], dep['ref_img_wfc'])
+#         input  = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics'])
+#         target = dep['tgt_img']
+
+#         # [B,H,W,C] -> [B,C,H,W]
+#         input = input.permute(0, 3, 1, 2)
+#         target = target.permute(0, 3, 1, 2)
+
+#         # [-1,1] -> [0,1] -> normalize
+#         input01 = (input + 1.0) / 2.0
+#         target01 = (target + 1.0) / 2.0
+#         input = (input01 - self.mean_const) / self.std_const
+#         target = (target01 - self.mean_const) / self.std_const
+
+#         # Resize if needed
+#         if self.resize:
+#             input = torch.nn.functional.interpolate(
+#                 input, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False
+#             )
+#             target = torch.nn.functional.interpolate(
+#                 target, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False
+#             )
+
+#         # Pass through VGG and tap features at conv{1..5}_2
+#         loss = 0.0
+#         x, y = input, target
+#         for i, layer in enumerate(self.vgg_feats):
+#             x = layer(x)
+#             y = layer(y)
+#             if i in self.target_layers:
+#                 diff = torch.nn.functional.l1_loss(x, y, reduction='mean') # same as dividing by num_neurons
+#                 loss += diff
+#         return loss
+
+
 class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True, img_size=224):
         super(VGGPerceptualLoss, self).__init__()
         blocks = []
-        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[:4].eval())
-        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[4:9].eval())
-        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[9:16].eval())
-        blocks.append(torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features[16:23].eval())
+        # vgg19 blocks: conv1_2, conv2_2, conv3_2, conv4_2, conv5_2
+        vgg19_features = torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1).features.eval()
+        blocks.append(vgg19_features[:4])
+        blocks.append(vgg19_features[4:9])
+        blocks.append(vgg19_features[9:14])
+        blocks.append(vgg19_features[14:23])
+        blocks.append(vgg19_features[23:32])
         for bl in blocks:
             for p in bl.parameters():
                 p.requires_grad = False
@@ -165,7 +226,12 @@ class VGGPerceptualLoss(torch.nn.Module):
         self.std_const = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,3,1,1)
 
         self.resize = resize
-        self.img_size = img_size
+        if isinstance(img_size, int):
+            self.img_size = (img_size, img_size)
+        else:
+            self.img_size = img_size
+        # from original tensorflow code in mpi.py (why? not sure.)
+        self.constant_scales = [1/2.6, 1/4.8, 1/3.7, 1/5.6, 10/1.5]
 
     def forward(self, mpi_pred, dep): # input, target
         rgba_layers = mpi_from_net_output(mpi_pred, dep)
@@ -181,27 +247,18 @@ class VGGPerceptualLoss(torch.nn.Module):
         input01 = (input+1.0) / 2.0
         target01 = (target+1.0) / 2.0
         
-        input = (input01-self.mean_const) / self.std_const
+        input  = (input01 -self.mean_const) / self.std_const
         target = (target01-self.mean_const) / self.std_const
 
         if self.resize:
-            input = self.transform(input, mode='bilinear', size=(self.img_size, self.img_size), align_corners=False)
-            target = self.transform(target, mode='bilinear', size=(self.img_size, self.img_size), align_corners=False)
+            input  = self.transform(input , mode='bilinear', size=self.img_size, align_corners=False)
+            target = self.transform(target, mode='bilinear', size=self.img_size, align_corners=False)
+            
         x = input
         y = target
         loss = torch.nn.functional.l1_loss(x, y)
         for i, block in enumerate(self.blocks):
             x = block(x)
             y = block(y)
-            loss += torch.nn.functional.l1_loss(x, y) / (1+i)
+            loss += torch.nn.functional.l1_loss(x, y) * self.constant_scales[i]
         return loss
-
-
-if __name__ == '__main__':
-    import torch
-    model = StereoMagnificationModel(4)
-    print(model)
-    x = torch.rand(2,15,224,224).cuda()
-    model.cuda()
-    out = model(x)
-    print(out.shape)

@@ -38,6 +38,7 @@ parser.add_argument('--seed', default=seed, type=int, help="Training seed")
 parser.add_argument('--wandb', action='store_true', help="Enable Weights & Biases logging")
 parser.add_argument('--log_img_every', default=1000, type=int, help="Log images every N training iterations")
 parser.add_argument('--save_every_n_iterations', default=None, type=int, help="Saves a checkpoint every N training iterations.")
+parser.add_argument('--resize_during_training', default=False, type=bool, help="Resize the input image to the given size during training.")
 
 
 def train_net(args):
@@ -133,7 +134,7 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
 
     print("Training")
     losses = AverageMeter()
-    criterion = VGGPerceptualLoss().to(device)
+    criterion = VGGPerceptualLoss(resize=args.resize_during_training, img_size=args.img_size).to(device)
     for i, (img, dep) in enumerate(tqdm(train_loader, desc="Training MPI")):
         # Move to GPU, if available
         img = img.type(torch.FloatTensor).to(device, non_blocking=True)
@@ -253,18 +254,28 @@ def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss
         os.makedirs(dir)
 
 
+    replace_file = None
     if global_step is not None: # if save_every_n_iterations is not None, save the checkpoint with the current iteration number
-        filename = os.path.join(dir, f'checkpoint_at_step_{global_step}.tar') # current checkpoint
+        filename = os.path.join(dir, f'in_progress_step_{global_step}.tar') # current checkpoint
         # Remove any existing checkpoint_at_step files
         for existing_file in os.listdir(dir):
             if existing_file.startswith('checkpoint_at_step') and existing_file.endswith('.tar'):
-                os.remove(os.path.join(dir, existing_file))
+                replace_file = os.path.join(dir, existing_file) # don't remove yet
     else:
         filename = os.path.join(dir, 'checkpoint.tar') # current end-of-epoch checkpoint
     torch.save(state, filename)
+    
+    # Rename the file after loaded
+    if global_step is not None:
+        new_filename = os.path.join(dir, f'checkpoint_at_step_{global_step}.tar')
+        os.rename(filename, new_filename)
+
     # If this checkpoint is the best so far, store a copy so it doesn't get overwritten by a worse checkpoint
     if is_best:
         torch.save(state, os.path.join(dir, 'BEST_checkpoint.tar'))
+
+    if replace_file is not None: # replace only AFTER the new checkpoint
+        os.remove(replace_file)
 
 
 if __name__ == '__main__':
