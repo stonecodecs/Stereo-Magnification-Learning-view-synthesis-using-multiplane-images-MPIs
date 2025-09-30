@@ -86,7 +86,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 continue
             
             all_images = scene['images']
-            all_cameras = scene['cameras']
+            all_cameras = scene['cameras'] # cameras are OpenCV c2w; intrinsics are normalized?
             all_timestamps = scene['timestamps']
 
             # selected scene data
@@ -105,7 +105,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 self.img_size[1] * cy,
                 device="cpu"
               )
-              extr = to_homogenous(make_extrinsics_matrix(Rt_flat)).to("cpu")
+              extr = torch.inverse(to_homogenous(make_extrinsics_matrix(Rt_flat))).to("cpu")
 
               # extract images
               img = decode_image(all_images[index], mode="RGB") # (C,H,W)
