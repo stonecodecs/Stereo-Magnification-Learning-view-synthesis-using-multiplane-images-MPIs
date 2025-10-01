@@ -11,11 +11,11 @@ from dataset import RealEstateDataset
 from networks import StereoMagnificationModel, VGGPerceptualLoss
 from utils import *
 
-img_size = (360, 640)  # W,H
+img_size = (640, 360)  # W,H
 num_planes = 32
 lr = 2e-4
 batch_size = 1
-end_epoch = 20
+end_epoch = 40
 checkpoint = None
 print_freq = 100
 data_dir = "/workspace/re10kvol/re10k"

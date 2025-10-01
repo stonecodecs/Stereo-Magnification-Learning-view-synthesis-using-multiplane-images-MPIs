@@ -24,7 +24,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
     self.min_dist = min_dist
     self.max_dist = max_dist
     self.num_planes = num_planes
-    if isinstance(img_size, int):
+    if isinstance(img_size, int): # expects (W,H)
       self.img_size = (img_size, img_size)
     else:
       self.img_size = img_size
@@ -86,7 +86,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 continue
             
             all_images = scene['images']
-            all_cameras = scene['cameras'] # cameras are OpenCV c2w; intrinsics are normalized?
+            all_cameras = scene['cameras'] # raw RE10K is w2c!
             all_timestamps = scene['timestamps']
 
             # selected scene data
@@ -109,7 +109,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
 
               # extract images
               img = decode_image(all_images[index], mode="RGB") # (C,H,W)
-              scaled_img = F.interpolate(img.unsqueeze(0), self.img_size).squeeze(0)
+              scaled_img = F.interpolate(img.unsqueeze(0), (self.img_size[1], self.img_size[0])).squeeze(0) # expects (H,W)
               img_tensor = preprocess_image_torch(scaled_img/255.0).permute(1, 2, 0) # [-1,1] HWC
 
               metadata.append({
