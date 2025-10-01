@@ -967,9 +967,9 @@ def visualize_mpi_layers(rgba_layers, mpi_planes, max_cols=8, show_alpha=False):
         
         # Determine if foreground or background
         if i == 0:
-            layer_type = " (FG)"
-        elif i == num_planes - 1:
             layer_type = " (BG)"
+        elif i == num_planes - 1: # far to near order
+            layer_type = " (FG)"
         else:
             layer_type = ""
         
