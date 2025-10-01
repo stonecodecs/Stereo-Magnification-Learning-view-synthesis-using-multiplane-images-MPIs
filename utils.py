@@ -7,7 +7,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchvision
-
+import PIL.Image
+import PIL.ImageDraw
+import PIL.ImageFont
 import matplotlib.pyplot as plt
 
 device = torch.device("cuda")
@@ -868,3 +870,120 @@ def to_homogenous(mat, device='cuda'):
     mat_ = torch.cat([mat, torch.zeros(1, mat.shape[1], device=device)], dim=0)
     mat_[3, 3] = 1
     return mat_
+
+def visualize_mpi_layers(rgba_layers, mpi_planes, max_cols=8, show_alpha=False):
+    """
+    Create a grid visualization of all MPI layers with labels.
+    
+    Args:
+        rgba_layers: [batch, height, width, num_planes, 4] MPI representation
+        mpi_planes: [num_planes] or [batch, num_planes] depth values for each plane
+        max_cols: maximum number of columns in the grid
+        show_alpha: if True, show alpha channel as grayscale overlay
+    
+    Returns:
+        numpy array [H, W, 3] containing the grid visualization
+    """
+    
+    # Extract first batch item
+    rgba = rgba_layers[0]  # [height, width, num_planes, 4]
+    height, width, num_planes, _ = rgba.shape
+    
+    # Get plane depths
+    if len(mpi_planes.shape) == 1:
+        planes = mpi_planes.cpu().numpy()
+    else:
+        planes = mpi_planes[0].cpu().numpy()
+    
+    # Determine grid layout
+    num_cols = min(max_cols, num_planes)
+    num_rows = math.ceil(num_planes / num_cols)
+    
+    # Add padding and space for labels
+    label_height = 35
+    padding = 5
+    cell_width = width + padding * 2
+    cell_height = height + label_height + padding * 2
+    
+    # Create output canvas
+    canvas_width = num_cols * cell_width
+    canvas_height = num_rows * cell_height
+    canvas = PIL.Image.new('RGB', (canvas_width, canvas_height), color=(40, 40, 40))
+    draw = PIL.ImageDraw.Draw(canvas)
+    
+    # Try to use a font, fallback to default if not available
+    try:
+        font = PIL.ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+    except:
+        try:
+            font = PIL.ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 14)
+        except:
+            font = PIL.ImageFont.load_default()
+    
+    for i in range(num_planes):
+        row = i // num_cols
+        col = i % num_cols
+        
+        # Extract RGB and alpha for this layer
+        rgb = rgba[:, :, i, :3].cpu().numpy()  # [-1, 1]
+        alpha = rgba[:, :, i, 3:4].cpu().numpy()  # [-1, 1]
+        
+        # Normalize to [0, 1]
+        rgb = (rgb + 1.0) / 2.0
+        alpha = (alpha + 1.0) / 2.0
+        
+        # Create RGB visualization
+        rgb_vis = (rgb * 255).astype(np.uint8)
+        rgb_img = PIL.Image.fromarray(rgb_vis)
+        
+        # Optionally apply alpha as overlay
+        if show_alpha:
+            # Blend with checkerboard pattern to show transparency
+            alpha_expanded = np.repeat(alpha, 3, axis=2)
+            # Create checkerboard
+            checker_size = 8
+            checker = np.zeros((height, width, 3), dtype=np.uint8)
+            for y in range(0, height, checker_size):
+                for x in range(0, width, checker_size):
+                    if ((x // checker_size) + (y // checker_size)) % 2 == 0:
+                        checker[y:y+checker_size, x:x+checker_size] = 200
+                    else:
+                        checker[y:y+checker_size, x:x+checker_size] = 150
+            
+            # Blend RGB with checkerboard based on alpha
+            blended = (rgb_vis * alpha_expanded + checker * (1 - alpha_expanded)).astype(np.uint8)
+            rgb_img = PIL.Image.fromarray(blended)
+        
+        # Calculate position
+        x_offset = col * cell_width + padding
+        y_offset = row * cell_height + padding + label_height
+        
+        # Paste layer image
+        canvas.paste(rgb_img, (x_offset, y_offset))
+        
+        # Add label with layer number and depth
+        label_y = row * cell_height + padding + 5
+        label_x = col * cell_width + padding
+        
+        # Determine if foreground or background
+        if i == 0:
+            layer_type = " (FG)"
+        elif i == num_planes - 1:
+            layer_type = " (BG)"
+        else:
+            layer_type = ""
+        
+        # Calculate mean alpha for this layer
+        mean_alpha = alpha.mean()
+        label_text = f"L{i}{layer_type} | d={planes[i]:.2f} | α={mean_alpha:.2f}"
+        
+        # Draw text with semi-transparent background
+        bbox = draw.textbbox((label_x, label_y), label_text, font=font)
+        # Expand bbox slightly for padding
+        bbox = (bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2)
+        draw.rectangle(bbox, fill=(0, 0, 0, 180))
+        draw.text((label_x, label_y), label_text, fill=(255, 255, 255), font=font)
+    
+    # Convert to numpy array
+    canvas_np = np.array(canvas)
+    return canvas_np
