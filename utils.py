@@ -926,11 +926,11 @@ def visualize_mpi_layers(rgba_layers, mpi_planes, max_cols=8, show_alpha=False):
         
         # Extract RGB and alpha for this layer
         rgb = rgba[:, :, i, :3].cpu().numpy()  # [-1, 1]
-        alpha = rgba[:, :, i, 3:4].cpu().numpy()  # [-1, 1]
+        alpha = rgba[:, :, i, 3:4].cpu().numpy()  # [0, 1]
         
         # Normalize to [0, 1]
         rgb = (rgb + 1.0) / 2.0
-        alpha = (alpha + 1.0) / 2.0
+        # alpha = (alpha + 1.0) / 2.0 -- already normalized beforehand
         
         # Create RGB visualization
         rgb_vis = (rgb * 255).astype(np.uint8)
