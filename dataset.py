@@ -105,7 +105,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 self.img_size[1] * cy,
                 device="cpu"
               )
-              extr = torch.inverse(to_homogenous(make_extrinsics_matrix(Rt_flat))).to("cpu")
+              extr = to_homogenous(make_extrinsics_matrix(Rt_flat)).to("cpu") # w2c raw
 
               # extract images
               img = decode_image(all_images[index], mode="RGB") # (C,H,W)
