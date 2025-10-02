@@ -10,6 +10,7 @@ import math
 from dataset import RealEstateDataset
 from networks import StereoMagnificationModel, VGGPerceptualLoss
 from utils import *
+from PIL import Image
 
 img_size = (640, 360)  # W,H
 num_planes = 32
@@ -164,31 +165,39 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
             logger.info(status)
 
         # Periodic image logging (first item in batch)
-        if use_wandb and (i % log_img_every == 0):
-            try:
+        if (i % log_img_every == 0):
+            if use_wandb:
+                try:
+                    with torch.no_grad():
+                        rgba_layers = mpi_from_net_output(out, dep)
+                        rel_pose = torch.matmul(dep['tgt_img_cfw'], dep['ref_img_wfc'])
+                        pred_image = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics'])
+                        # take first sample and convert to uint8 HWC
+                        pred_vis = (((pred_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                        tgt_vis = (((dep['tgt_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                        ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                        
+                        # Create MPI layer grid visualization
+                        mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
+                        
+                        wandb.log({
+                            'train/pred_image': wandb.Image(pred_vis),
+                            'train/target_image': wandb.Image(tgt_vis),
+                            'train/ref_image': wandb.Image(ref_vis),
+                            'train/mpi_layers': wandb.Image(mpi_grid_vis),
+                            'epoch': epoch,
+                            'iter': i,
+                            'global_step': global_step
+                        })
+                except Exception:
+                    pass
+            else:
                 with torch.no_grad():
                     rgba_layers = mpi_from_net_output(out, dep)
                     rel_pose = torch.matmul(dep['tgt_img_cfw'], dep['ref_img_wfc'])
                     pred_image = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics'])
-                    # take first sample and convert to uint8 HWC
-                    pred_vis = (((pred_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                    tgt_vis = (((dep['tgt_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                    ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                    
-                    # Create MPI layer grid visualization
                     mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
-                    
-                    wandb.log({
-                        'train/pred_image': wandb.Image(pred_vis),
-                        'train/target_image': wandb.Image(tgt_vis),
-                        'train/ref_image': wandb.Image(ref_vis),
-                        'train/mpi_layers': wandb.Image(mpi_grid_vis),
-                        'epoch': epoch,
-                        'iter': i,
-                        'global_step': global_step
-                    })
-            except Exception:
-                pass
+                    Image.fromarray(mpi_grid_vis).save(os.path.join(args.save_dir, f'train_mpi_layers_{global_step}.png'))
 
         # save model every N training iterations
         # NOTE:
@@ -223,25 +232,33 @@ def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=Fal
         losses.update(loss.item())
 
         # Periodic image logging
-        if use_wandb and (i % log_img_every == 0):
-            try:
-                pred_vis = (((output_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                tgt_vis = (((target[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                
-                # Create MPI layer grid visualization
-                mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
-                
-                wandb.log({
-                    'valid/pred_image': wandb.Image(pred_vis),
-                    'valid/target_image': wandb.Image(tgt_vis),
-                    'valid/ref_image': wandb.Image(ref_vis),
-                    'valid/mpi_layers': wandb.Image(mpi_grid_vis),
-                    'epoch': epoch,
-                    'valid/iter': i
-                })
-            except Exception:
-                pass
+        if (i % log_img_every == 0):
+            if use_wandb:
+                try:
+                    pred_vis = (((output_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    tgt_vis = (((target[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    
+                    # Create MPI layer grid visualization
+                    mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
+                    
+                    wandb.log({
+                        'valid/pred_image': wandb.Image(pred_vis),
+                        'valid/target_image': wandb.Image(tgt_vis),
+                        'valid/ref_image': wandb.Image(ref_vis),
+                        'valid/mpi_layers': wandb.Image(mpi_grid_vis),
+                        'epoch': epoch,
+                        'valid/iter': i
+                    })
+                except Exception:
+                    pass
+            else:
+                with torch.no_grad():
+                    rgba_layers = mpi_from_net_output(out, dep)
+                    rel_pose = torch.matmul(dep['tgt_img_cfw'], dep['ref_img_wfc'])
+                    pred_image = mpi_render_view_torch(rgba_layers, rel_pose, dep['mpi_planes'][0], dep['intrinsics'])
+                    mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
+                    Image.fromarray(mpi_grid_vis).save(os.path.join(args.save_dir, f'valid_mpi_layers_{global_step}.png'))
 
     # Print status
     status = 'Validation: Loss {loss.avg:.4f}\n'.format(loss=losses)

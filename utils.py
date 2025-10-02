@@ -871,7 +871,7 @@ def to_homogenous(mat, device='cuda'):
     mat_[3, 3] = 1
     return mat_
 
-def visualize_mpi_layers(rgba_layers, mpi_planes, max_cols=8, show_alpha=False):
+def visualize_mpi_layers(rgba_layers, mpi_planes, max_cols=8, show_alpha=True):
     """
     Create a grid visualization of all MPI layers with labels.
     
@@ -930,29 +930,37 @@ def visualize_mpi_layers(rgba_layers, mpi_planes, max_cols=8, show_alpha=False):
         
         # Normalize to [0, 1]
         rgb = (rgb + 1.0) / 2.0
-        # alpha = (alpha + 1.0) / 2.0 -- already normalized beforehand
+        # alpha = (alpha + 1.0) / 2.0 -- already normalized
         
-        # Create RGB visualization
-        rgb_vis = (rgb * 255).astype(np.uint8)
-        rgb_img = PIL.Image.fromarray(rgb_vis)
-        
-        # Optionally apply alpha as overlay
+        # Create RGB visualization (these are both in [0,255])
+
         if show_alpha:
-            # Blend with checkerboard pattern to show transparency
-            alpha_expanded = np.repeat(alpha, 3, axis=2)
-            # Create checkerboard
-            checker_size = 8
-            checker = np.zeros((height, width, 3), dtype=np.uint8)
-            for y in range(0, height, checker_size):
-                for x in range(0, width, checker_size):
-                    if ((x // checker_size) + (y // checker_size)) % 2 == 0:
-                        checker[y:y+checker_size, x:x+checker_size] = 200
-                    else:
-                        checker[y:y+checker_size, x:x+checker_size] = 150
+          black_bkg = np.zeros((height, width, 3), dtype=np.uint8)
+          rgb_vis = (rgb * 255)
+          rgb_vis = (rgb_vis * alpha) + (black_bkg * (1 - alpha)) # blend with black background
+          rgb_img = PIL.Image.fromarray(rgb_vis.astype(np.uint8))
+        else: # only shows image... shouldn't be used
+          rgb_vis = (rgb * 255)
+          rgb_img = PIL.Image.fromarray(rgb_vis.astype(np.uint8))
+
+        # # Optionally apply alpha as overlay
+        # rgb_vis = (rgb * 255)
+        # if show_alpha:
+        #     # Blend with checkerboard pattern to show transparency
+        #     alpha_expanded = np.repeat(alpha, 3, axis=2)
+        #     # Create checkerboard
+        #     checker_size = 8
+        #     checker = np.zeros((height, width, 3), dtype=np.uint8)
+        #     for y in range(0, height, checker_size):
+        #         for x in range(0, width, checker_size):
+        #             if ((x // checker_size) + (y // checker_size)) % 2 == 0:
+        #                 checker[y:y+checker_size, x:x+checker_size] = 200
+        #             else:
+        #                 checker[y:y+checker_size, x:x+checker_size] = 150
             
-            # Blend RGB with checkerboard based on alpha
-            blended = (rgb_vis * alpha_expanded + checker * (1 - alpha_expanded)).astype(np.uint8)
-            rgb_img = PIL.Image.fromarray(blended)
+        #     # Blend RGB with checkerboard based on alpha
+        #     blended = (rgb_vis * alpha_expanded + checker * (1 - alpha_expanded)).astype(np.uint8)
+        #     rgb_img = PIL.Image.fromarray(blended)
         
         # Calculate position
         x_offset = col * cell_width + padding
