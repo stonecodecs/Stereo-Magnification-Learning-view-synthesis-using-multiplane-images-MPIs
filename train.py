@@ -63,14 +63,38 @@ def train_net(args):
         args.checkpoint = os.path.join(args.save_dir, 'BEST_checkpoint.tar')
 
     if args.checkpoint is not None and os.path.exists(args.checkpoint):
-        ckt = torch.load(args.checkpoint, weights_only=False)
-        epoch = ckt['epoch']
-        epochs_since_improvement = ckt['epochs_since_improvement']
-        best_loss = ckt['loss']
+        ckt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        # Restore trackers
+        start_epoch = ckt.get('epoch', 0) + 1
+        epochs_since_improvement = ckt.get('epochs_since_improvement', 0)
+        best_loss = ckt.get('loss', float('inf'))
+
+        # Restore model
         model = StereoMagnificationModel(num_mpi_planes=ckt['num_planes'])
-        model.load_state_dict = ckt['state_dict']
-        optimizer = ckt['optimizer']
-        global_step = ckt['global_step']
+        model.load_state_dict(ckt['state_dict'])
+
+        # Restore optimizer
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        opt_blob = ckt.get('optimizer', None)
+        if opt_blob is not None:
+            try:
+                # Preferred: already a state_dict
+                if isinstance(opt_blob, dict) and 'state' in opt_blob and 'param_groups' in opt_blob:
+                    optimizer.load_state_dict(opt_blob)
+                # Backcompat: an Optimizer object was (incorrectly) saved
+                elif hasattr(opt_blob, 'state_dict'):
+                    optimizer.load_state_dict(opt_blob.state_dict())
+                # ensure optimizer state tensors are on the correct device
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+            except Exception:
+                # If anything goes wrong, continue with freshly initialized optimizer
+                pass
+
+        # Restore global step
+        global_step = ckt.get('global_step', 0)
         print("\nLoaded checkpoint from", args.checkpoint)
         # ! if checkpoint is within the checkpoints directory (save_dir),
         # ! then this will be deleted & replaced by the new checkpoint!
@@ -275,7 +299,7 @@ def save_checkpoint(epoch, epochs_since_improvement, state_dict, optimizer, loss
         'epochs_since_improvement': epochs_since_improvement,
         'loss': loss if loss is not None else float('inf'),
         'state_dict': state_dict,
-        'optimizer': optimizer,
+        'optimizer': optimizer.state_dict() if optimizer is not None else None,
         'num_planes': num_planes,
         'global_step': global_step
     }
