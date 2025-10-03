@@ -135,6 +135,7 @@ class RealEstateDataset(torch.utils.data.IterableDataset):
                 'tgt_img': tgt_img['image'],
                 'ref_img': ref_img['image'],
                 'ref_img_wfc': torch.inverse(ref_img['pose']),
+                'src_img': src_img['image'], # for visualization
                 'intrinsics': src_img['intrinsics'],
                 'mpi_planes': psv_planes,
                 'data_id': scene['key'] # replacing text_id

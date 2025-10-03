@@ -176,7 +176,7 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
                         pred_vis = (((pred_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
                         tgt_vis = (((dep['tgt_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
                         ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
-                        
+                        src_vis = (((dep['src_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
                         # Create MPI layer grid visualization
                         mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
                         
@@ -184,6 +184,7 @@ def train(train_loader, model, optimizer, epoch, logger, log_img_every=200, use_
                             'train/pred_image': wandb.Image(pred_vis),
                             'train/target_image': wandb.Image(tgt_vis),
                             'train/ref_image': wandb.Image(ref_vis),
+                            'train/support_image': wandb.Image(src_vis),
                             'train/mpi_layers': wandb.Image(mpi_grid_vis),
                             'epoch': epoch,
                             'iter': i,
@@ -238,6 +239,7 @@ def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=Fal
                     pred_vis = (((output_image[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
                     tgt_vis = (((target[0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
                     ref_vis = (((dep['ref_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
+                    src_vis = (((dep['src_img'][0, :, :, :3] + 1.0) / 2.0).clamp(0,1) * 255.0).byte().cpu().numpy()
                     
                     # Create MPI layer grid visualization
                     mpi_grid_vis = visualize_mpi_layers(rgba_layers, dep['mpi_planes'], max_cols=8)
@@ -246,6 +248,7 @@ def valid(valid_loader, model, logger, epoch=0, log_img_every=200, use_wandb=Fal
                         'valid/pred_image': wandb.Image(pred_vis),
                         'valid/target_image': wandb.Image(tgt_vis),
                         'valid/ref_image': wandb.Image(ref_vis),
+                        'valid/support_image': wandb.Image(src_vis),
                         'valid/mpi_layers': wandb.Image(mpi_grid_vis),
                         'epoch': epoch,
                         'valid/iter': i
