@@ -156,7 +156,7 @@ def bilinear_wrapper_torch(imgs, coords, device='cuda'):
   imgs = imgs.permute([0, 3, 1, 2])
   # TODO: resize coords from (0,1) to (-1, 1)
   coords2 = torch.Tensor([-1, -1]).to(device) + 2.0 * coords
-  imgs_sampled = torch.nn.functional.grid_sample(imgs, coords2, align_corners=True) ###
+  imgs_sampled = torch.nn.functional.grid_sample(imgs, coords2, align_corners=False) ###
   # imgs_sampled = torch.div(2.0* (imgs_sampled0 + torch.Tensor([1.0, 1.0])).to(device), torch.Tensor([(x_max - x_min), (y_max - y_min)])).to(device)
   # permute back to (N, H, W, C)
   imgs = imgs.permute([0, 2, 3, 1])
@@ -429,7 +429,7 @@ def resampler_wrapper_torch(imgs, coords, device='cuda'):
   return torch.nn.functional.grid_sample(
       imgs.permute([0, 3, 1, 2]),             # change images from (N, H, W, C) to (N, C, H, W)
       torch.Tensor([-1, -1]).to(device) + 2.0 * coords   # resize coords from (0,1) to (-1, 1)
-      , align_corners=True).permute([0, 2, 3, 1])                 # change result from (N, C, H, W) to (N, H, W, C)
+      , align_corners=False).permute([0, 2, 3, 1])                 # change result from (N, C, H, W) to (N, H, W, C)
 
 def projective_inverse_warp_torch(
     img, depth, pose, intrinsics, ret_flows=False, device='cuda'):
