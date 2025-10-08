@@ -170,6 +170,165 @@ def compute_psnr(img1, img2):
     return 20 * torch.log10(2.0 / torch.sqrt(mse))
 
 
+import struct
+import numpy as np
+
+def read_colmap_cameras_bin(path):
+    """
+    Reads COLMAP cameras.bin file.
+    Returns a dict: {camera_id: {'model': str, 'width': int, 'height': int, 'params': np.array}}
+    """
+    cameras = {}
+    CAMERA_MODEL_IDS = {
+        0: 'SIMPLE_PINHOLE',
+        1: 'PINHOLE',
+        2: 'SIMPLE_RADIAL',
+        3: 'RADIAL',
+        4: 'OPENCV',
+        5: 'OPENCV_FISHEYE',
+        6: 'FULL_OPENCV',
+        7: 'FOV',
+        8: 'SIMPLE_RADIAL_FISHEYE',
+        9: 'RADIAL_FISHEYE',
+        10: 'THIN_PRISM_FISHEYE',
+    }
+    with open(path, "rb") as f:
+        num_cameras = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_cameras):
+            camera_id = struct.unpack("<i", f.read(4))[0]
+            model_id = struct.unpack("<i", f.read(4))[0]
+            model = CAMERA_MODEL_IDS.get(model_id, "UNKNOWN")
+            width = struct.unpack("<Q", f.read(8))[0]
+            height = struct.unpack("<Q", f.read(8))[0]
+            if model in ['SIMPLE_PINHOLE', 'SIMPLE_RADIAL', 'SIMPLE_RADIAL_FISHEYE']:
+                num_params = 3
+            elif model in ['PINHOLE', 'OPENCV', 'OPENCV_FISHEYE', 'FOV', 'RADIAL_FISHEYE']:
+                num_params = 4
+            elif model in ['RADIAL']:
+                num_params = 5
+            elif model in ['FULL_OPENCV', 'THIN_PRISM_FISHEYE']:
+                num_params = 8
+            else:
+                raise ValueError(f"Unknown camera model: {model}")
+            params = struct.unpack("<" + "d" * num_params, f.read(8 * num_params))
+            cameras[camera_id] = {
+                'model': model,
+                'width': width,
+                'height': height,
+                'params': np.array(params)
+            }
+    return cameras
+
+def qvec2rotmat(qvec):
+    """Convert quaternion to rotation matrix."""
+    w, x, y, z = qvec
+    return np.array([
+        [1 - 2*y**2 - 2*z**2,     2*x*y - 2*z*w,     2*x*z + 2*y*w],
+        [2*x*y + 2*z*w,     1 - 2*x**2 - 2*z**2,     2*y*z - 2*x*w],
+        [2*x*z - 2*y*w,         2*y*z + 2*x*w, 1 - 2*x**2 - 2*y**2]
+    ])
+
+def read_colmap_images_bin(path):
+    """
+    Reads COLMAP images.bin file.
+    Returns a dict: {image_id: {'qvec': np.array, 'tvec': np.array, 'camera_id': int, 'name': str}}
+    """
+    images = {}
+    with open(path, "rb") as f:
+        num_images = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(num_images):
+            image_id = struct.unpack("<i", f.read(4))[0]
+            qvec = struct.unpack("<dddd", f.read(8*4))
+            tvec = struct.unpack("<ddd", f.read(8*3))
+            camera_id = struct.unpack("<i", f.read(4))[0]
+            name = b""
+            while True:
+                c = f.read(1)
+                if c == b"\x00":
+                    break
+                name += c
+            name = name.decode("utf-8")
+            # skip 2D points
+            num_points2d = struct.unpack("<Q", f.read(8))[0]
+            f.read(num_points2d * (8 + 8 + 4))  # x, y, point3D_id
+            images[image_id] = {
+                'qvec': np.array(qvec),
+                'tvec': np.array(tvec),
+                'camera_id': camera_id,
+                'name': name
+            }
+    return images
+
+def get_camera_intrinsics(camera):
+    """
+    Given a camera dict from read_colmap_cameras_bin, return 3x3 intrinsics matrix.
+    """
+    model = camera['model']
+    params = camera['params']
+    if model in ['SIMPLE_PINHOLE', 'SIMPLE_RADIAL', 'SIMPLE_RADIAL_FISHEYE']:
+        fx = fy = params[0]
+        cx = params[1]
+        cy = params[2]
+    elif model in ['PINHOLE', 'OPENCV', 'OPENCV_FISHEYE', 'FOV', 'RADIAL_FISHEYE']:
+        fx = params[0]
+        fy = params[1]
+        cx = params[2]
+        cy = params[3]
+    elif model in ['RADIAL']:
+        fx = fy = params[0]
+        cx = params[1]
+        cy = params[2]
+    elif model in ['FULL_OPENCV', 'THIN_PRISM_FISHEYE']:
+        fx = params[0]
+        fy = params[1]
+        cx = params[2]
+        cy = params[3]
+    else:
+        raise ValueError(f"Unknown camera model: {model}")
+    K = np.array([
+        [fx, 0, cx],
+        [0, fy, cy],
+        [0,  0,  1]
+    ], dtype=np.float32)
+    return K
+
+def get_camera_extrinsics(image):
+    """
+    Given an image dict from read_colmap_images_bin, return 4x4 world-to-camera extrinsic matrix.
+    """
+    qvec = image['qvec']
+    tvec = image['tvec']
+    R = qvec2rotmat(qvec)
+    t = np.array(tvec).reshape(3, 1)
+    extrinsic = np.eye(4, dtype=np.float32)
+    extrinsic[:3, :3] = R
+    extrinsic[:3, 3:] = t
+    return extrinsic
+
+def get_flat_camera_params(extr, intr):
+    """
+    Convert extrinsic and intrinsic matrices to flat camera parameters expected by the model.
+    Focal lengths, principal points, then row-major order of the 3x4 extrinsic matrix.
+    [fx, fy, cx, cy, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz]
+    """
+    fx, fy, cx, cy = intr[0,0], intr[1,1], intr[0,2], intr[1,2]
+    tx, ty, tz = extr[0,3], extr[1,3], extr[2,3]
+    r1, r2, r3 = extr[0,0], extr[1,0], extr[2,0]
+    r4, r5, r6 = extr[0,1], extr[1,1], extr[2,1]
+    r7, r8, r9 = extr[0,2], extr[1,2], extr[2,2]
+    return np.array([fx, fy, cx, cy, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz])
+
+
+def load_custom_scene(data_path, scene_idx=0):
+    """Load a scene from custom format."""
+    cameras_bin = os.path.join(data_path, 'cameras.bin')
+    images_bin = os.path.join(data_path, 'images.bin')
+    cameras_ = read_colmap_cameras_bin(cameras_bin)
+    images = read_colmap_images_bin(images_bin)
+    cameras = {k: get_flat_camera_params(get_camera_extrinsics(v), get_camera_intrinsics(v)) for k, v in cameras_.items()}
+    return {'images': images, 'cameras': cameras, 'key': scene_idx, 'images_dir': data_path, 'cameras_dir': data_path}
+
+
 def main(args):
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -191,10 +350,17 @@ def main(args):
     if args.dataset_type == 're10k':
         scene = load_re10k_scene(args.data_path, args.scene_idx)
         all_images = scene['images']
+        print(all_images)
+        print(scene['cameras'])
+        all_cameras = scene['cameras']
+        scene_id = scene['key']
+    elif args.dataset_type == 'custom': # COLMAP format directory
+        scene = load_custom_scene(args.data_path, args.scene_idx)
+        all_images = scene['images']
         all_cameras = scene['cameras']
         scene_id = scene['key']
     else:
-        raise NotImplementedError("Only RE10K dataset currently supported")
+        raise NotImplementedError("Only RE10K and custom datasets currently supported")
     
     num_views = len(all_images)
     print(f"Scene has {num_views} views")
