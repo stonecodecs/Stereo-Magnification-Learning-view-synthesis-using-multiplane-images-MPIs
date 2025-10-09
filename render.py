@@ -27,8 +27,8 @@ from utils import *
 
 parser = ArgumentParser(description="MPI Inference on arbitrary sequences")
 parser.add_argument('--checkpoint', required=True, type=str, help="Path to trained checkpoint")
-parser.add_argument('--dataset_type', default='re10k', choices=['re10k', 'custom'], 
-                    help="Dataset type (re10k or custom)")
+parser.add_argument('--dataset_type', default='re10k', choices=['re10k', 'colmap'], 
+                    help="Dataset type (re10k or colmap)")
 parser.add_argument('--data_path', required=True, type=str, 
                     help="Path to dataset (for re10k: parent dir of train/test)")
 parser.add_argument('--scene_idx', default=0, type=int, 
@@ -69,12 +69,15 @@ def load_re10k_scene(data_path, scene_idx=0, split='test'):
     raise ValueError(f"Scene index {scene_idx} not found in dataset")
 
 
-def prepare_view(image_bytes, camera, img_size, device='cuda'):
+def prepare_view(image_bytes, camera, img_size, device='cuda', decode=True):
     """Decode and prepare a single view."""
     from torchvision.io import decode_image
     
     # Decode image
-    img = decode_image(image_bytes, mode="RGB")  # (C, H, W)
+    if decode:
+        img = decode_image(image_bytes, mode="RGB")  # (C, H, W)
+    else:
+        img = torch.tensor(image_bytes) # though, these are not image bytes but actual tensors.
     
     # Extract camera params
     fx, fy, cx, cy = camera[0:4]
@@ -231,7 +234,8 @@ def qvec2rotmat(qvec):
 def read_colmap_images_bin(path):
     """
     Reads COLMAP images.bin file.
-    Returns a dict: {image_id: {'qvec': np.array, 'tvec': np.array, 'camera_id': int, 'name': str}}
+    Returns a dict: {image_id: {'qvec': np.array, 'tvec': np.array, 'camera_id': int, 'name': str, 'Rt': np.array}}
+    For each image, also computes the 3x4 [R|t] matrix (world-to-camera) flattened to shape (12,).
     """
     images = {}
     with open(path, "rb") as f:
@@ -251,18 +255,25 @@ def read_colmap_images_bin(path):
             # skip 2D points
             num_points2d = struct.unpack("<Q", f.read(8))[0]
             f.read(num_points2d * (8 + 8 + 4))  # x, y, point3D_id
+
             images[image_id] = {
                 'qvec': np.array(qvec),
                 'tvec': np.array(tvec),
                 'camera_id': camera_id,
-                'name': name
+                'name': name,
             }
+
     return images
 
 def get_camera_intrinsics(camera):
     """
     Given a camera dict from read_colmap_cameras_bin, return 3x3 intrinsics matrix.
+    Here, we assume that we only have one shared camera for the scene.
     """
+    try:
+        camera = list(camera.values())[0]
+    except:
+        raise ValueError("Multiple cameras found in the scene. Requires one.")
     model = camera['model']
     params = camera['params']
     if model in ['SIMPLE_PINHOLE', 'SIMPLE_RADIAL', 'SIMPLE_RADIAL_FISHEYE']:
@@ -309,24 +320,49 @@ def get_flat_camera_params(extr, intr):
     """
     Convert extrinsic and intrinsic matrices to flat camera parameters expected by the model.
     Focal lengths, principal points, then row-major order of the 3x4 extrinsic matrix.
-    [fx, fy, cx, cy, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz]
+    [fx, fy, cx, cy, 0.0, 0.0, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz]
+    (0s kept for compatibility with RE10K.)
     """
     fx, fy, cx, cy = intr[0,0], intr[1,1], intr[0,2], intr[1,2]
     tx, ty, tz = extr[0,3], extr[1,3], extr[2,3]
     r1, r2, r3 = extr[0,0], extr[1,0], extr[2,0]
     r4, r5, r6 = extr[0,1], extr[1,1], extr[2,1]
     r7, r8, r9 = extr[0,2], extr[1,2], extr[2,2]
-    return np.array([fx, fy, cx, cy, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz])
+    return np.array([fx, fy, cx, cy, 0.0, 0.0, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz])
 
 
-def load_custom_scene(data_path, scene_idx=0):
-    """Load a scene from custom format."""
-    cameras_bin = os.path.join(data_path, 'cameras.bin')
-    images_bin = os.path.join(data_path, 'images.bin')
-    cameras_ = read_colmap_cameras_bin(cameras_bin)
-    images = read_colmap_images_bin(images_bin)
-    cameras = {k: get_flat_camera_params(get_camera_extrinsics(v), get_camera_intrinsics(v)) for k, v in cameras_.items()}
-    return {'images': images, 'cameras': cameras, 'key': scene_idx, 'images_dir': data_path, 'cameras_dir': data_path}
+def load_custom_scene(colmap_path):
+    """Load a scene from custom (COLMAP) format."""
+    images = []
+    images_path = os.path.join(colmap_path, 'images')
+    for img_name in sorted(os.listdir(images_path)):
+        if img_name.endswith('.jpg') or img_name.endswith('.png'):
+            img_path = os.path.join(images_path, img_name)
+            img = Image.open(img_path)
+            img = img.convert('RGB')
+            images.append(np.array(img))
+
+    cameras_bin = os.path.join(colmap_path, 'sparse', '0', 'cameras.bin') # intrinsics
+    images_bin = os.path.join(colmap_path, 'sparse', '0', 'images.bin') # extrinsics
+    intrinsics = get_camera_intrinsics(read_colmap_cameras_bin(cameras_bin))
+    images_info = read_colmap_images_bin(images_bin)
+
+    extrinsics = []
+    for info in images_info.values():
+        # Compute 3x4 Rt matrix (world-to-camera)
+        R = qvec2rotmat(info['qvec'])
+        t = np.array(info['tvec']).reshape(3, 1)
+        Rt = np.concatenate([R, t], axis=1).astype(np.float64)  # shape (3,4)
+        extrinsics.append(Rt)
+
+    # normalize intrinsics via W,H of image
+    H, W = images[0].shape[:2] # H,W,C
+    intrinsics[0, :] = intrinsics[0, :] / W
+    intrinsics[1, :] = intrinsics[1, :] / H
+
+    cameras = [torch.tensor(get_flat_camera_params(extrinsics[i], intrinsics)) for i in range(len(extrinsics))]
+    cameras = torch.stack(cameras, dim=0)
+    return {'images': images, 'cameras': cameras, 'key': os.path.basename(colmap_path)}
 
 
 def main(args):
@@ -346,7 +382,7 @@ def main(args):
     model.eval()
     
     # Load scene
-    print(f"Loading scene {args.scene_idx} from {args.data_path}")
+    print(f"Loading scene {args.data_path}")
     if args.dataset_type == 're10k':
         scene = load_re10k_scene(args.data_path, args.scene_idx)
         all_images = scene['images']
@@ -354,8 +390,8 @@ def main(args):
         print(scene['cameras'])
         all_cameras = scene['cameras']
         scene_id = scene['key']
-    elif args.dataset_type == 'custom': # COLMAP format directory
-        scene = load_custom_scene(args.data_path, args.scene_idx)
+    elif args.dataset_type == 'colmap': # COLMAP format directory
+        scene = load_custom_scene(args.data_path)
         all_images = scene['images']
         all_cameras = scene['cameras']
         scene_id = scene['key']
@@ -371,18 +407,27 @@ def main(args):
     else:
         # Use original size from first image
         from torchvision.io import decode_image
-        temp_img = decode_image(all_images[0], mode="RGB")
-        _, H, W = temp_img.shape
-        img_size = (W, H)
+        if args.dataset_type == 're10k':
+            # NOTE: decode_img gets it in (3, H, W)
+            temp_img = decode_image(all_images[0], mode="RGB")
+            _, H, W = temp_img.shape
+            img_size = (W, H)
+        else: 
+            # originally, images are of (H, W, 3)
+             H, W, _= all_images[0].shape
+             img_size = (W, H)
     
+    if args.dataset_type == 'colmap':  # get into compatible format
+        # Convert all images to torch tensors in (3, H, W) format and update all_images in-place
+        all_images = [torch.tensor(img).permute(2, 0, 1).contiguous() for img in all_images]
     print(f"Using image size: {img_size}")
     
     # Prepare reference and source views
     print(f"Using ref_idx={args.ref_idx}, src_idx={args.src_idx}")
     ref_view = prepare_view(all_images[args.ref_idx], all_cameras[args.ref_idx], 
-                             img_size, device=device)
+                             img_size, device=device, decode=False if args.dataset_type == 'colmap' else True)
     src_view = prepare_view(all_images[args.src_idx], all_cameras[args.src_idx], 
-                             img_size, device=device)
+                             img_size, device=device, decode=False if args.dataset_type == 'colmap' else True)
     
     # Build MPI
     print("Building MPI...")
@@ -401,7 +446,7 @@ def main(args):
     for i in tqdm(range(num_views)):
         try:
             # Prepare target view
-            tgt_view = prepare_view(all_images[i], all_cameras[i], img_size, device=device)
+            tgt_view = prepare_view(all_images[i], all_cameras[i], img_size, device=device, decode=False if args.dataset_type == 'colmap' else True)
             
             # Render
             rendered = render_view(
