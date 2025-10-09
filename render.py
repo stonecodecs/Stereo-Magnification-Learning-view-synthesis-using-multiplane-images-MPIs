@@ -256,7 +256,7 @@ def read_colmap_images_bin(path):
             name = name.decode("utf-8")
             # skip 2D points
             num_points2d = struct.unpack("<Q", f.read(8))[0]
-            f.read(num_points2d * (8 + 8 + 4))  # x, y, point3D_id
+            f.read(num_points2d * (8 + 8 + 8))  # x, y, point3D_id
 
             images[image_id] = {
                 'qvec': np.array(qvec),
