@@ -46,6 +46,8 @@ parser.add_argument('--save_mpi_layers', action='store_true',
                     help="Save individual MPI layer visualizations")
 parser.add_argument('--compute_metrics', action='store_true',
                     help="Compute PSNR/SSIM if ground truth available")
+parser.add_argument('--render_range', type=int, nargs=2, default=None,
+                    help="Range of frames to render (e.g., 10 140). Renders all if not set.")
 
 
 def load_re10k_scene(data_path, scene_idx=0, split='test'):
@@ -430,6 +432,17 @@ def main(args):
     print(f"Rendering {num_views} views...")
     psnrs = []
 
+    # Determine frame range to render
+    if args.render_range:
+        start_frame, end_frame = args.render_range
+        start_frame = max(0, start_frame)
+        end_frame = min(num_views - 1, end_frame)
+        render_indices = range(start_frame, end_frame + 1)
+        print(f"Rendering frames from {start_frame} to {end_frame}...")
+    else:
+        render_indices = range(num_views)
+        print(f"Rendering all {num_views} views...")
+
     # structure output directory
     output_dir = os.path.join(args.output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -441,7 +454,7 @@ def main(args):
     test_dir = os.path.join(output_dir, 'test', 'modeldir')
     os.makedirs(test_dir, exist_ok=True)
     
-    for i in tqdm(range(num_views)):
+    for i in tqdm(render_indices):
         try:
             # Prepare target view
             tgt_view = prepare_view(all_images[i], all_cameras[i], img_size, device=device, decode=False if args.dataset_type == 'colmap' else True)
