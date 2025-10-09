@@ -303,65 +303,52 @@ def get_camera_intrinsics(camera):
     ], dtype=np.float32)
     return K
 
-def get_camera_extrinsics(image):
-    """
-    Given an image dict from read_colmap_images_bin, return 4x4 world-to-camera extrinsic matrix.
-    """
-    qvec = image['qvec']
-    tvec = image['tvec']
-    R = qvec2rotmat(qvec)
-    t = np.array(tvec).reshape(3, 1)
-    extrinsic = np.eye(4, dtype=np.float32)
-    extrinsic[:3, :3] = R
-    extrinsic[:3, 3:] = t
-    return extrinsic
-
-def get_flat_camera_params(extr, intr):
-    """
-    Convert extrinsic and intrinsic matrices to flat camera parameters expected by the model.
-    Focal lengths, principal points, then row-major order of the 3x4 extrinsic matrix.
-    [fx, fy, cx, cy, 0.0, 0.0, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz]
-    (0s kept for compatibility with RE10K.)
-    """
-    fx, fy, cx, cy = intr[0,0], intr[1,1], intr[0,2], intr[1,2]
-    tx, ty, tz = extr[0,3], extr[1,3], extr[2,3]
-    r1, r2, r3 = extr[0,0], extr[1,0], extr[2,0]
-    r4, r5, r6 = extr[0,1], extr[1,1], extr[2,1]
-    r7, r8, r9 = extr[0,2], extr[1,2], extr[2,2]
-    return np.array([fx, fy, cx, cy, 0.0, 0.0, r1, r2, r3, tx, r4, r5, r6, ty, r7, r8, r9, tz])
-
-
 def load_custom_scene(colmap_path):
     """Load a scene from custom (COLMAP) format."""
     images = []
     images_path = os.path.join(colmap_path, 'images')
-    for img_name in sorted(os.listdir(images_path)):
-        if img_name.endswith('.jpg') or img_name.endswith('.png'):
-            img_path = os.path.join(images_path, img_name)
-            img = Image.open(img_path)
-            img = img.convert('RGB')
-            images.append(np.array(img))
+    image_names = sorted([name for name in os.listdir(images_path) if name.endswith(('.jpg', '.png'))])
+    
+    for img_name in image_names:
+        img_path = os.path.join(images_path, img_name)
+        img = Image.open(img_path).convert('RGB')
+        images.append(np.array(img))
 
-    cameras_bin = os.path.join(colmap_path, 'sparse', '0', 'cameras.bin') # intrinsics
-    images_bin = os.path.join(colmap_path, 'sparse', '0', 'images.bin') # extrinsics
+    cameras_bin = os.path.join(colmap_path, 'sparse', '0', 'cameras.bin')
+    images_bin = os.path.join(colmap_path, 'sparse', '0', 'images.bin')
     intrinsics = get_camera_intrinsics(read_colmap_cameras_bin(cameras_bin))
     images_info = read_colmap_images_bin(images_bin)
 
-    extrinsics = []
-    for info in images_info.values():
-        # Compute 3x4 Rt matrix (world-to-camera)
+    # Normalize intrinsics
+    H, W = images[0].shape[:2]
+    normalized_intr = intrinsics.copy()
+    normalized_intr[0, :] /= W
+    normalized_intr[1, :] /= H
+    
+    intr_params = np.array([
+        normalized_intr[0,0], normalized_intr[1,1], 
+        normalized_intr[0,2], normalized_intr[1,2], 
+        0.0, 0.0  # Distortion params for RE10K compatibility
+    ])
+
+    all_cam_params = []
+    # Sort images_info by name to match the sorted image files
+    sorted_images_info = sorted(images_info.values(), key=lambda x: x['name'])
+
+    for info in sorted_images_info:
+        # Get w2c extrinsic 3x4 matrix [R|t]
         R = qvec2rotmat(info['qvec'])
-        t = np.array(info['tvec']).reshape(3, 1)
-        Rt = np.concatenate([R, t], axis=1).astype(np.float64)  # shape (3,4)
-        extrinsics.append(Rt)
-
-    # normalize intrinsics via W,H of image
-    H, W = images[0].shape[:2] # H,W,C
-    intrinsics[0, :] = intrinsics[0, :] / W
-    intrinsics[1, :] = intrinsics[1, :] / H
-
-    cameras = [torch.tensor(get_flat_camera_params(extrinsics[i], intrinsics)) for i in range(len(extrinsics))]
-    cameras = torch.stack(cameras, dim=0)
+        t = np.array(info['tvec'])
+        w2c_mat_3x4 = np.concatenate([R, t.reshape(3, 1)], axis=1)
+        
+        # Flatten row-major to get the 12 extrinsic params
+        extr_flat = w2c_mat_3x4.flatten()
+        
+        # Combine with intrinsic params
+        cam_params = np.concatenate([intr_params, extr_flat])
+        all_cam_params.append(torch.from_numpy(cam_params))
+        
+    cameras = torch.stack(all_cam_params, dim=0).float()
     return {'images': images, 'cameras': cameras, 'key': os.path.basename(colmap_path)}
 
 
