@@ -429,6 +429,17 @@ def main(args):
     # Render all views
     print(f"Rendering {num_views} views...")
     psnrs = []
+
+    # structure output directory
+    output_dir = os.path.join(args.output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # input images (ref, src) to 'train'
+    train_dir = os.path.join(output_dir, 'train', 'modeldir')
+    os.makedirs(train_dir, exist_ok=True)
+    # input images (ref, src) to 'test'
+    test_dir = os.path.join(output_dir, 'test', 'modeldir')
+    os.makedirs(test_dir, exist_ok=True)
     
     for i in tqdm(range(num_views)):
         try:
@@ -445,14 +456,18 @@ def main(args):
                 device=device
             )
             
+            if i in [args.ref_idx, args.src_idx]:
+                save_dir = train_dir
+            else:
+                save_dir = test_dir
             # Save
-            os.makedirs(os.path.join(args.output_dir, 'renders'), exist_ok=True)
-            save_path = os.path.join(args.output_dir, 'renders', f'render_{i:04d}.png')
+            os.makedirs(os.path.join(save_dir, 'renders'), exist_ok=True)
+            save_path = os.path.join(save_dir, 'renders', f'render_{i:04d}.png')
             save_image_tensor(rendered, save_path)
             
             # Also save ground truth for comparison
-            os.makedirs(os.path.join(args.output_dir, 'gt'), exist_ok=True)
-            gt_path = os.path.join(args.output_dir, 'gt', f'gt_{i:04d}.png')
+            os.makedirs(os.path.join(save_dir, 'gt'), exist_ok=True)
+            gt_path = os.path.join(save_dir, 'gt', f'gt_{i:04d}.png')
             save_image_tensor(tgt_view['image'], gt_path)
             
             # Compute metrics if requested
