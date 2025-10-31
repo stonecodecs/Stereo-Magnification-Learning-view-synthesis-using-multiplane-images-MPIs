@@ -256,7 +256,7 @@ class VGGPerceptualLoss(torch.nn.Module):
             
         x = input
         y = target
-        loss = torch.nn.functional.l1_loss(x, y)
+        loss = torch.nn.functional.l1_loss(x, y) * 100.0 # why this constant? => match original behavior and upweight pixel loss!
         for i, block in enumerate(self.blocks):
             x = block(x)
             y = block(y)

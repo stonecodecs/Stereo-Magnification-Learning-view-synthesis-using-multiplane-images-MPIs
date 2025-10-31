@@ -20,6 +20,7 @@ import numpy as np
 from argparse import ArgumentParser
 from PIL import Image
 from tqdm import tqdm
+import re
 
 from networks import StereoMagnificationModel
 from utils import *
@@ -305,11 +306,30 @@ def get_camera_intrinsics(camera):
     ], dtype=np.float32)
     return K
 
+def natural_sort_key(s):
+    """A key for sorting strings in natural order (e.g. 'image10.png' after 'image2.png')."""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
+
+def find_index_by_id(image_names, file_id):
+    """Finds the list index of an image file that matches a numerical ID."""
+    for i, name in enumerate(image_names):
+        # Extract numbers from the filename stem
+        stem = os.path.splitext(name)[0]
+        numbers = re.findall(r'\d+', stem)
+        if numbers:
+            # Check if the last number found matches the ID
+            if int(numbers[-1]) == file_id:
+                return i
+    return -1 # Not found
+
 def load_custom_scene(colmap_path):
     """Load a scene from custom (COLMAP) format."""
     images = []
     images_path = os.path.join(colmap_path, 'images')
-    image_names = sorted([name for name in os.listdir(images_path) if name.endswith(('.jpg', '.png'))])
+    image_names = sorted(
+        [name for name in os.listdir(images_path) if name.endswith(('.jpg', '.png'))],
+        key=natural_sort_key
+    )
     
     for img_name in image_names:
         img_path = os.path.join(images_path, img_name)
@@ -335,7 +355,7 @@ def load_custom_scene(colmap_path):
 
     all_cam_params = []
     # Sort images_info by name to match the sorted image files
-    sorted_images_info = sorted(images_info.values(), key=lambda x: x['name'])
+    sorted_images_info = sorted(images_info.values(), key=lambda x: natural_sort_key(x['name']))
 
     for info in sorted_images_info:
         # Get w2c extrinsic 3x4 matrix [R|t]
@@ -351,7 +371,7 @@ def load_custom_scene(colmap_path):
         all_cam_params.append(torch.from_numpy(cam_params))
         
     cameras = torch.stack(all_cam_params, dim=0).float()
-    return {'images': images, 'cameras': cameras, 'key': os.path.basename(colmap_path)}
+    return {'images': images, 'cameras': cameras, 'key': os.path.basename(colmap_path), 'image_names': image_names}
 
 
 def main(args):
@@ -379,11 +399,26 @@ def main(args):
         print(scene['cameras'])
         all_cameras = scene['cameras']
         scene_id = scene['key']
+        # For RE10K, we use indices directly as there are no consistent filenames
+        ref_idx = args.ref_idx
+        src_idx = args.src_idx
     elif args.dataset_type == 'colmap': # COLMAP format directory
         scene = load_custom_scene(args.data_path)
         all_images = scene['images']
         all_cameras = scene['cameras']
         scene_id = scene['key']
+        image_names = scene['image_names']
+        
+        print(f"Searching for file IDs {args.ref_idx} and {args.src_idx} in filenames...")
+        ref_idx = find_index_by_id(image_names, args.ref_idx)
+        src_idx = find_index_by_id(image_names, args.src_idx)
+
+        if ref_idx == -1:
+            raise ValueError(f"Reference ID {args.ref_idx} not found in any filename.")
+        if src_idx == -1:
+            raise ValueError(f"Source ID {args.src_idx} not found in any filename.")
+        print(f"Found Reference: {image_names[ref_idx]} (at index {ref_idx})")
+        print(f"Found Source:    {image_names[src_idx]} (at index {src_idx})")
     else:
         raise NotImplementedError("Only RE10K and custom datasets currently supported")
     
@@ -412,10 +447,10 @@ def main(args):
     print(f"Using image size: {img_size}")
     
     # Prepare reference and source views
-    print(f"Using ref_idx={args.ref_idx}, src_idx={args.src_idx}")
-    ref_view = prepare_view(all_images[args.ref_idx], all_cameras[args.ref_idx], 
+    print(f"Using ref_idx={ref_idx}, src_idx={src_idx}")
+    ref_view = prepare_view(all_images[ref_idx], all_cameras[ref_idx], 
                              img_size, device=device, decode=False if args.dataset_type == 'colmap' else True)
-    src_view = prepare_view(all_images[args.src_idx], all_cameras[args.src_idx], 
+    src_view = prepare_view(all_images[src_idx], all_cameras[src_idx], 
                              img_size, device=device, decode=False if args.dataset_type == 'colmap' else True)
     
     # Build MPI
@@ -434,14 +469,22 @@ def main(args):
 
     # Determine frame range to render
     if args.render_range:
-        start_frame, end_frame = args.render_range
+        start_id, end_id = args.render_range
+        if args.dataset_type == 'colmap':
+            print(f"Searching for render range file IDs {start_id} to {end_id}...")
+            start_frame = find_index_by_id(image_names, start_id)
+            end_frame = find_index_by_id(image_names, end_id)
+            if start_frame == -1: raise ValueError(f"Start ID {start_id} not found.")
+            if end_frame == -1: raise ValueError(f"End ID {end_id} not found.")
+        else: # For RE10K, use direct indices
+            start_frame, end_frame = start_id, end_id
+
         start_frame = max(0, start_frame)
         end_frame = min(num_views - 1, end_frame)
         render_indices = range(start_frame, end_frame + 1)
-        print(f"Rendering frames from {start_frame} to {end_frame}...")
+        print(f"Rendering frames from index {start_frame} to {end_frame}...")
     else:
         render_indices = range(num_views)
-        print(f"Rendering all {num_views} views...")
 
     # structure output directory
     output_dir = os.path.join(args.output_dir)
@@ -469,7 +512,7 @@ def main(args):
                 device=device
             )
             
-            if i in [args.ref_idx, args.src_idx]:
+            if i in [ref_idx, src_idx]:
                 save_dir = train_dir
             else:
                 save_dir = test_dir
