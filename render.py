@@ -516,14 +516,29 @@ def main(args):
                 save_dir = train_dir
             else:
                 save_dir = test_dir
+            
+            # Determine output filename
+            # For COLMAP, use the file ID from the original filename
+            # For RE10K, use the list index
+            if args.dataset_type == 'colmap':
+                # Extract the file ID from the original filename
+                stem = os.path.splitext(image_names[i])[0]
+                numbers = re.findall(r'\d+', stem)
+                if numbers:
+                    file_id = int(numbers[-1])
+                else:
+                    file_id = i  # fallback to index
+            else:
+                file_id = i
+            
             # Save
             os.makedirs(os.path.join(save_dir, 'renders'), exist_ok=True)
-            save_path = os.path.join(save_dir, 'renders', f'render_{i:04d}.png')
+            save_path = os.path.join(save_dir, 'renders', f'render_{file_id:04d}.png')
             save_image_tensor(rendered, save_path)
             
             # Also save ground truth for comparison
             os.makedirs(os.path.join(save_dir, 'gt'), exist_ok=True)
-            gt_path = os.path.join(save_dir, 'gt', f'gt_{i:04d}.png')
+            gt_path = os.path.join(save_dir, 'gt', f'gt_{file_id:04d}.png')
             save_image_tensor(tgt_view['image'], gt_path)
             
             # Compute metrics if requested
